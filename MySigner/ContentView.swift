@@ -414,6 +414,7 @@ class LocalHTTPServer {
 struct GenericDocumentPicker: UIViewControllerRepresentable {
     var types: [UTType]
     var onPick: (URL) -> Void
+    @Environment(\.presentationMode) var presentationMode
 
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: types)
@@ -422,13 +423,17 @@ struct GenericDocumentPicker: UIViewControllerRepresentable {
         return picker
     }
     func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
-    func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick) }
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     class Coordinator: NSObject, UIDocumentPickerDelegate {
-        let onPick: (URL) -> Void
-        init(onPick: @escaping (URL) -> Void) { self.onPick = onPick }
+        let parent: GenericDocumentPicker
+        
+        init(_ parent: GenericDocumentPicker) { 
+            self.parent = parent 
+        }
 
         func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            parent.presentationMode.wrappedValue.dismiss()
             guard let url = urls.first else { return }
             let accessing = url.startAccessingSecurityScopedResource()
             // Copy immediately while we have access
@@ -439,11 +444,15 @@ struct GenericDocumentPicker: UIViewControllerRepresentable {
                 }
                 try FileManager.default.copyItem(at: url, to: tempDest)
                 if accessing { url.stopAccessingSecurityScopedResource() }
-                DispatchQueue.main.async { self.onPick(tempDest) }
+                DispatchQueue.main.async { self.parent.onPick(tempDest) }
             } catch {
                 if accessing { url.stopAccessingSecurityScopedResource() }
                 print("Document picker copy error: \(error)")
             }
+        }
+        
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            parent.presentationMode.wrappedValue.dismiss()
         }
     }
 }
@@ -599,7 +608,7 @@ struct FilesView: View {
                 }
             }
             .sheet(isPresented: $showImporter) {
-                GenericDocumentPicker(types: [.item]) { url in
+                GenericDocumentPicker(types: [UTType(filenameExtension: "ipa") ?? .data, UTType(filenameExtension: "p12") ?? .data, UTType(filenameExtension: "mobileprovision") ?? .data, .archive, .data, .item]) { url in
                     let destURL = store.appsDir.appendingPathComponent(url.lastPathComponent)
                     do {
                         if FileManager.default.fileExists(atPath: destURL.path) {
