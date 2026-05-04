@@ -137,6 +137,18 @@ class AppStore: ObservableObject {
     }
 
     // MARK: - Fetch Source (supports KSign/ESign JSON format)
+    struct RemoteAppItem: Codable {
+        let name: String
+        let version: String
+        let bundleIdentifier: String
+        let downloadURL: String
+        let iconURL: String?
+    }
+
+    struct RemoteSourceRoot: Codable {
+        let apps: [RemoteAppItem]
+    }
+
     func fetch(source: Source, completion: @escaping (Result<Int, Error>) -> Void) {
         guard let url = URL(string: source.url) else {
             completion(.failure(URLError(.badURL)))
@@ -148,14 +160,14 @@ class AppStore: ObservableObject {
                 guard let data = data else { completion(.failure(URLError(.cannotParseResponse))); return }
                 do {
                     var fetched: [AppItem] = []
-                    // Try decoding as array first
-                    if let items = try? JSONDecoder().decode([AppItem].self, from: data) {
-                        fetched = items
+                    
+                    if let items = try? JSONDecoder().decode([RemoteAppItem].self, from: data) {
+                        fetched = items.map { AppItem(name: $0.name, version: $0.version, bundleID: $0.bundleIdentifier, ipaURL: $0.downloadURL, iconURL: $0.iconURL) }
                     } else {
-                        // Try decoding as root object with "apps" key
-                        let root = try JSONDecoder().decode(SourceRoot.self, from: data)
-                        fetched = root.apps
+                        let root = try JSONDecoder().decode(RemoteSourceRoot.self, from: data)
+                        fetched = root.apps.map { AppItem(name: $0.name, version: $0.version, bundleID: $0.bundleIdentifier, ipaURL: $0.downloadURL, iconURL: $0.iconURL) }
                     }
+                    
                     let existingIDs = Set(self.apps.map { $0.bundleID })
                     let newApps = fetched.filter { !existingIDs.contains($0.bundleID) }
                     self.apps.append(contentsOf: newApps)
@@ -166,11 +178,6 @@ class AppStore: ObservableObject {
                 }
             }
         }.resume()
-    }
-
-    // Helper struct for source root with "apps" key
-    struct SourceRoot: Codable {
-        let apps: [AppItem]
     }
 
     // MARK: - Download IPA
@@ -1040,15 +1047,16 @@ struct CertificatesView: View {
     }
 }
 
+// MARK: - Add Certificate View (with separated pickers)
 struct AddCertificateView: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) var dismiss
     @State private var certName = ""
     @State private var p12URL: URL?
     @State private var provURL: URL?
-    @State private var pickingType: CertPickType? = nil
-
-    enum CertPickType: Identifiable { case p12, provision; var id: Int { hashValue } }
+    
+    @State private var showP12Picker = false
+    @State private var showProvPicker = false
 
     var body: some View {
         NavigationView {
@@ -1062,11 +1070,11 @@ struct AddCertificateView: View {
                         .foregroundColor(.white)
 
                     FilePickerRow(icon: "lock.shield.fill", title: "P12 File", subtitle: p12URL?.lastPathComponent ?? "اختر ملف .p12", color: .purple, isSelected: p12URL != nil) {
-                        pickingType = .p12
+                        showP12Picker = true
                     }
 
                     FilePickerRow(icon: "doc.badge.gearshape.fill", title: "Provision Profile", subtitle: provURL?.lastPathComponent ?? "اختر ملف .mobileprovision", color: .cyan, isSelected: provURL != nil) {
-                        pickingType = .provision
+                        showProvPicker = true
                     }
 
                     Button("Add") {
@@ -1090,15 +1098,17 @@ struct AddCertificateView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
             }
-            .fileImporter(isPresented: Binding<Bool>(
-                get: { pickingType != nil },
-                set: { if !$0 { pickingType = nil } }
-            ), allowedContentTypes: pickingType == .p12 ? [UTType(filenameExtension: "p12")!] : [UTType(filenameExtension: "mobileprovision")!],
-                          allowsMultipleSelection: false) { result in
+            .fileImporter(isPresented: $showP12Picker, allowedContentTypes: [UTType(filenameExtension: "p12") ?? .data]) { result in
                 if let url = try? result.get().first {
-                    if pickingType == .p12 { p12URL = url } else { provURL = url }
+                    _ = url.startAccessingSecurityScopedResource()
+                    p12URL = url
                 }
-                pickingType = nil
+            }
+            .fileImporter(isPresented: $showProvPicker, allowedContentTypes: [UTType(filenameExtension: "mobileprovision") ?? .data]) { result in
+                if let url = try? result.get().first {
+                    _ = url.startAccessingSecurityScopedResource()
+                    provURL = url
+                }
             }
         }
         .preferredColorScheme(.dark)
