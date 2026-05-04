@@ -1,0 +1,53 @@
+name: Remote Sign IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      ipa_url:
+        description: 'Direct URL of unsigned IPA'
+        required: true
+      p12_base64:
+        description: 'Base64 of .p12 certificate'
+        required: true
+      mobileprovision_base64:
+        description: 'Base64 of .mobileprovision'
+        required: true
+      password:
+        description: 'Certificate password'
+        required: true
+      app_name:
+        description: 'App name for artifact'
+        required: true
+
+jobs:
+  sign:
+    runs-on: macos-latest
+    steps:
+      - name: Download unsigned IPA
+        run: |
+          curl -L -o unsigned.ipa "${{ github.event.inputs.ipa_url }}"
+          ls -lh unsigned.ipa
+
+      - name: Install zsign tool
+        run: |
+          brew install openssl
+          rm -rf zsign
+          git clone https://github.com/zhlynn/zsign.git
+          cd zsign/build/macos
+          make clean && make
+          sudo cp ../../bin/zsign /usr/local/bin/
+
+      - name: Decrypt certificates
+        run: |
+          echo "${{ github.event.inputs.p12_base64 }}" | base64 -d > cert.p12
+          echo "${{ github.event.inputs.mobileprovision_base64 }}" | base64 -d > profile.mobileprovision
+
+      - name: Sign IPA
+        run: |
+          zsign -k cert.p12 -p "${{ github.event.inputs.password }}" -m profile.mobileprovision -o signed.ipa unsigned.ipa
+
+      - name: Upload signed IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.app_name }}-signed.ipa
+          path: signed.ipa
