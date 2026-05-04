@@ -410,64 +410,44 @@ class LocalHTTPServer {
     }
 }
 
-// MARK: - Generic Document Picker (تم إصلاحه)
-struct GenericDocumentPicker: UIViewControllerRepresentable {
-    var types: [UTType] // لم نعد نعتمد عليها بشكل صارم، ولكن تبقى للتوافق
+// MARK: - SwiftUI Native FilePicker (الحل)
+struct FilePicker: View {
     @Binding var isPresented: Bool
     var onPick: (URL) -> Void
 
-    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        // استخدام أنواع ملفات واسعة لضمان قبول ipa, p12, mobileprovision إلخ
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.item, .data, .content])
-        picker.delegate = context.coordinator
-        picker.allowsMultipleSelection = false
-        return picker
-    }
-
-    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
-
-    func makeCoordinator() -> Coordinator { Coordinator(self) }
-
-    class Coordinator: NSObject, UIDocumentPickerDelegate {
-        let parent: GenericDocumentPicker
-
-        init(_ parent: GenericDocumentPicker) {
-            self.parent = parent
-        }
-
-        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-            guard let url = urls.first else {
-                DispatchQueue.main.async { self.parent.isPresented = false }
-                return
-            }
-            let accessing = url.startAccessingSecurityScopedResource()
-            let tempDest = FileManager.default.temporaryDirectory.appendingPathComponent(url.lastPathComponent)
-            var resultURL: URL
-            do {
-                if FileManager.default.fileExists(atPath: tempDest.path) {
-                    try FileManager.default.removeItem(at: tempDest)
+    var body: some View {
+        Color.clear
+            .fileImporter(
+                isPresented: $isPresented,
+                allowedContentTypes: [.item, .data, .content],
+                allowsMultipleSelection: false
+            ) { result in
+                switch result {
+                case .success(let urls):
+                    if let url = urls.first {
+                        let accessing = url.startAccessingSecurityScopedResource()
+                        let tempDest = FileManager.default.temporaryDirectory.appendingPathComponent(url.lastPathComponent)
+                        var resultURL: URL
+                        do {
+                            if FileManager.default.fileExists(atPath: tempDest.path) {
+                                try FileManager.default.removeItem(at: tempDest)
+                            }
+                            try FileManager.default.copyItem(at: url, to: tempDest)
+                            resultURL = tempDest
+                        } catch {
+                            print("File picker copy error: \(error)")
+                            resultURL = url
+                        }
+                        if accessing { url.stopAccessingSecurityScopedResource() }
+                        
+                        DispatchQueue.main.async {
+                            onPick(resultURL)
+                        }
+                    }
+                case .failure(let error):
+                    print("File picker error: \(error.localizedDescription)")
                 }
-                try FileManager.default.copyItem(at: url, to: tempDest)
-                resultURL = tempDest
-            } catch {
-                print("Document picker copy error: \(error)")
-                // Fallback: استخدام المسار الأصلي إذا فشل النسخ
-                resultURL = url
             }
-            if accessing {
-                url.stopAccessingSecurityScopedResource()
-            }
-            DispatchQueue.main.async { [weak self] in
-                self?.parent.isPresented = false
-                self?.parent.onPick(resultURL)
-            }
-        }
-
-        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
-            DispatchQueue.main.async { [weak self] in
-                self?.parent.isPresented = false
-            }
-        }
     }
 }
 
@@ -621,11 +601,9 @@ struct FilesView: View {
                     }
                 }
             }
-            .sheet(isPresented: $showImporter) {
-                GenericDocumentPicker(
-                    types: [.data, .item, .content],
-                    isPresented: $showImporter
-                ) { url in
+            // --- التعديل الأساسي: استخدام FilePicker الجديد ---
+            .background(
+                FilePicker(isPresented: $showImporter) { url in
                     let destURL = store.appsDir.appendingPathComponent(url.lastPathComponent)
                     do {
                         if FileManager.default.fileExists(atPath: destURL.path) {
@@ -641,7 +619,7 @@ struct FilesView: View {
                         print("File import error: \(error)")
                     }
                 }
-            }
+            )
             .confirmationDialog(selectedFileForAction?.lastPathComponent ?? "", isPresented: $showFileAction, titleVisibility: .visible) {
                 if let url = selectedFileForAction {
                     if url.pathExtension.lowercased() == "ipa" {
@@ -1895,6 +1873,8 @@ struct AddCertificateView: View {
     @State private var certName = ""
     @State private var p12URL: URL?
     @State private var provURL: URL?
+    
+    // --- التعديل الأساسي: استخدام متغيرات مستقلة لكل FilePicker ---
     @State private var showP12Picker = false
     @State private var showProvPicker = false
 
@@ -1944,22 +1924,17 @@ struct AddCertificateView: View {
                     Button("Cancel") { dismiss() }
                 }
             }
-            .sheet(isPresented: $showP12Picker) {
-                GenericDocumentPicker(
-                    types: [.data],
-                    isPresented: $showP12Picker
-                ) { url in
-                    p12URL = url
+            // --- التعديل الأساسي: تضمين FilePickers كخلفية ---
+            .background(
+                Group {
+                    FilePicker(isPresented: $showP12Picker) { url in
+                        p12URL = url
+                    }
+                    FilePicker(isPresented: $showProvPicker) { url in
+                        provURL = url
+                    }
                 }
-            }
-            .sheet(isPresented: $showProvPicker) {
-                GenericDocumentPicker(
-                    types: [.data],
-                    isPresented: $showProvPicker
-                ) { url in
-                    provURL = url
-                }
-            }
+            )
         }
         .preferredColorScheme(.dark)
     }
