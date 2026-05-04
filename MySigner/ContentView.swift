@@ -359,6 +359,29 @@ class LocalHTTPServer {
     }
 }
 
+// MARK: - Generic Document Picker (used everywhere)
+struct GenericDocumentPicker: UIViewControllerRepresentable {
+    var types: [UTType]
+    var onPick: (URL) -> Void
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: types)
+        picker.delegate = context.coordinator
+        return picker
+    }
+    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+    func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick) }
+    class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let onPick: (URL) -> Void
+        init(onPick: @escaping (URL) -> Void) { self.onPick = onPick }
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            guard let url = urls.first else { return }
+            _ = url.startAccessingSecurityScopedResource()
+            onPick(url)
+        }
+    }
+}
+
 // MARK: - Main ContentView
 struct ContentView: View {
     @StateObject private var store = AppStore()
@@ -388,7 +411,7 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Files View (working file importer)
+// MARK: - Files View (using sheet + GenericDocumentPicker)
 struct FilesView: View {
     @EnvironmentObject var store: AppStore
     @State private var showImporter = false
@@ -439,15 +462,10 @@ struct FilesView: View {
                     }
                 }
             }
-            .fileImporter(isPresented: $showImporter,
-                          allowedContentTypes: [.item],
-                          allowsMultipleSelection: true) { result in
-                if let urls = try? result.get() {
-                    for url in urls {
-                        _ = url.startAccessingSecurityScopedResource()
-                        if !importedFiles.contains(url) {
-                            importedFiles.append(url)
-                        }
+            .sheet(isPresented: $showImporter) {
+                GenericDocumentPicker(types: [.item]) { url in
+                    if !importedFiles.contains(url) {
+                        importedFiles.append(url)
                     }
                 }
             }
@@ -1047,7 +1065,7 @@ struct CertificatesView: View {
     }
 }
 
-// MARK: - Add Certificate View (with separated pickers)
+// MARK: - Add Certificate View (with separated pickers using sheet)
 struct AddCertificateView: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) var dismiss
@@ -1098,15 +1116,13 @@ struct AddCertificateView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
             }
-            .fileImporter(isPresented: $showP12Picker, allowedContentTypes: [UTType(filenameExtension: "p12") ?? .data]) { result in
-                if let url = try? result.get().first {
-                    _ = url.startAccessingSecurityScopedResource()
+            .sheet(isPresented: $showP12Picker) {
+                GenericDocumentPicker(types: [UTType(filenameExtension: "p12") ?? .data]) { url in
                     p12URL = url
                 }
             }
-            .fileImporter(isPresented: $showProvPicker, allowedContentTypes: [UTType(filenameExtension: "mobileprovision") ?? .data]) { result in
-                if let url = try? result.get().first {
-                    _ = url.startAccessingSecurityScopedResource()
+            .sheet(isPresented: $showProvPicker) {
+                GenericDocumentPicker(types: [UTType(filenameExtension: "mobileprovision") ?? .data]) { url in
                     provURL = url
                 }
             }
