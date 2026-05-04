@@ -49,6 +49,8 @@ class AppStore: ObservableObject {
     @Published var downloads: [DownloadItem] = []
     @Published var sources: [Source] = []
 
+    let server = LocalHTTPServer()
+
     private let baseDir: URL = {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let dir = docs.appendingPathComponent("MySignerStore")
@@ -161,12 +163,11 @@ class AppStore: ObservableObject {
             }
         }
         task.resume()
-        // keep observation alive
         _ = observation
     }
 
     // MARK: - Install via local server
-    func install(app: AppItem, server: LocalHTTPServer) {
+    func install(app: AppItem) {
         guard let localPath = app.localPath, FileManager.default.fileExists(atPath: localPath) else { return }
         if !server.isRunning { server.start() }
         let manifest: [String: Any] = [
@@ -204,8 +205,8 @@ class AppStore: ObservableObject {
     }
 }
 
-// MARK: - Local HTTP Server
-class LocalHTTPServer: ObservableObject {
+// MARK: - Local HTTP Server (using Network framework)
+class LocalHTTPServer {
     private var listener: NWListener?
     let port: UInt16 = 8080
     private(set) var isRunning = false
@@ -215,15 +216,24 @@ class LocalHTTPServer: ObservableObject {
     func start() {
         guard !isRunning else { return }
         let params = NWParameters.tcp
-        listener = try? NWListener(using: params, on: NWEndpoint.Port(integerLiteral: port))
-        listener?.stateUpdateHandler = { [weak self] state in
-            if state == .ready { self?.isRunning = true }
-            else if state == .failed(_) { self?.isRunning = false }
-            else if state == .cancelled { self?.isRunning = false }
+        listener = try? NWListener(using: params, on: .init(integerLiteral: port))
+        listener?.stateUpdateHandler = { state in
+            switch state {
+            case .ready:
+                self.isRunning = true
+            case .failed(let error):
+                print("Server error: \(error)")
+                self.isRunning = false
+            case .cancelled:
+                self.isRunning = false
+            default:
+                break
+            }
         }
         listener?.newConnectionHandler = { [weak self] connection in
+            guard let self = self else { return }
             connection.start(queue: .main)
-            self?.receive(on: connection)
+            self.receive(on: connection)
         }
         listener?.start(queue: .main)
     }
@@ -280,7 +290,6 @@ class LocalHTTPServer: ObservableObject {
 // MARK: - Main ContentView
 struct ContentView: View {
     @StateObject private var store = AppStore()
-    @StateObject private var server = LocalHTTPServer()
     @State private var selectedTab = 0
 
     var body: some View {
@@ -289,11 +298,11 @@ struct ContentView: View {
                 .tabItem { Label("Files", systemImage: "folder.fill") }
                 .tag(0)
 
-            LibraryView(server: server)
+            LibraryView()
                 .tabItem { Label("Library", systemImage: "square.grid.2x2.fill") }
                 .tag(1)
 
-            StoreFrontView(server: server)
+            StoreFrontView()
                 .tabItem { Label("App Store", systemImage: "plus.app.fill") }
                 .tag(2)
 
@@ -308,7 +317,6 @@ struct ContentView: View {
         .accentColor(.blue)
         .preferredColorScheme(.dark)
         .environmentObject(store)
-        .environmentObject(server)
     }
 }
 
@@ -358,7 +366,6 @@ struct FilesView: View {
 // MARK: - Library View
 struct LibraryView: View {
     @EnvironmentObject var store: AppStore
-    @ObservedObject var server: LocalHTTPServer
     @State private var tab = 0
 
     var downloadedApps: [AppItem] { store.apps.filter { $0.isDownloaded } }
@@ -378,12 +385,12 @@ struct LibraryView: View {
                     .padding(.top, 8)
 
                     if tab == 0 {
-                        AppListView(apps: downloadedApps, server: server)
+                        AppListView(apps: downloadedApps)
                     } else {
                         if installedApps.isEmpty {
                             Text("No installed apps").foregroundColor(.gray)
                         } else {
-                            AppListView(apps: installedApps, server: server, showInstall: false)
+                            AppListView(apps: installedApps, showInstall: false)
                         }
                     }
                 }
@@ -399,7 +406,6 @@ struct LibraryView: View {
 
 struct AppListView: View {
     let apps: [AppItem]
-    @ObservedObject var server: LocalHTTPServer
     var showInstall: Bool = true
     @EnvironmentObject var store: AppStore
 
@@ -418,7 +424,7 @@ struct AppListView: View {
                     Spacer()
                     if showInstall && !app.isInstalled {
                         Button("Install") {
-                            store.install(app: app, server: server)
+                            store.install(app: app)
                         }
                         .font(.caption.bold())
                         .foregroundColor(.white)
@@ -440,7 +446,6 @@ struct AppListView: View {
 // MARK: - App Store (StoreFrontView)
 struct StoreFrontView: View {
     @EnvironmentObject var store: AppStore
-    @ObservedObject var server: LocalHTTPServer
     @State private var showSources = false
     @State private var searchText = ""
 
@@ -467,7 +472,7 @@ struct StoreFrontView: View {
                                 }
                                 Spacer()
                                 if app.isDownloaded {
-                                    Button("Install") { store.install(app: app, server: server) }
+                                    Button("Install") { store.install(app: app) }
                                         .font(.caption.bold()).foregroundColor(.white)
                                         .padding(.horizontal, 14).padding(.vertical, 5)
                                         .background(Color.blue).clipShape(Capsule())
@@ -642,9 +647,7 @@ struct SettingsView: View {
                         NavigationLink(destination: Text("MySigner v1.0").foregroundColor(.white)) {
                             Label("About", systemImage: "info.circle")
                         }
-                        Button {
-                            // Example link
-                        } label: {
+                        Button { } label: {
                             Label("Telegram Channel", systemImage: "paperplane.fill").foregroundColor(.white)
                         }
                     }
@@ -726,15 +729,12 @@ struct CertificateImporter: View {
         NavigationView {
             Form {
                 Section {
-                    Button("Select .p12") {
-                        // Document picker integration simplified – you would use a UIDocumentPickerViewController wrapper
-                    }
-                    Button("Select .mobileprovision") {
-                    }
+                    Button("Select .p12") { }
+                    Button("Select .mobileprovision") { }
                     SecureField("Password", text: $password)
                 }
                 Button("Import") {
-                    if let p12 = p12Data {
+                    if p12Data != nil {
                         let cert = Certificate(name: "Imported", teamID: "", expiryDate: Date().addingTimeInterval(3600*24*30), p12Path: "", mobileProvisionPath: nil)
                         store.certificates.append(cert)
                         store.saveAll()
