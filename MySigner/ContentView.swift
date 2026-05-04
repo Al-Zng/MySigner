@@ -207,7 +207,6 @@ class AppStore: ObservableObject {
                     return
                 }
 
-                // Allow re-adding same bundleID from different sources (unique by ipaURL)
                 let existingURLs = Set(self.apps.map { $0.ipaURL })
                 let newApps = fetched.filter { !existingURLs.contains($0.ipaURL) }
                 self.apps.append(contentsOf: newApps)
@@ -242,7 +241,6 @@ class AppStore: ObservableObject {
 
                 guard let localURL = localURL, error == nil else { return }
 
-                // Use unique filename to allow multiple downloads of same app
                 let filename = "\(app.bundleID)_\(UUID().uuidString.prefix(8)).ipa"
                 let dest = self.appsDir.appendingPathComponent(filename)
                 do {
@@ -410,7 +408,7 @@ class LocalHTTPServer {
     }
 }
 
-// MARK: - SwiftUI Native FilePicker (الحل)
+// MARK: - SwiftUI Native FilePicker
 struct FilePicker: View {
     @Binding var isPresented: Bool
     var onPick: (URL) -> Void
@@ -601,7 +599,6 @@ struct FilesView: View {
                     }
                 }
             }
-            // --- التعديل الأساسي: استخدام FilePicker الجديد ---
             .background(
                 FilePicker(isPresented: $showImporter) { url in
                     let destURL = store.appsDir.appendingPathComponent(url.lastPathComponent)
@@ -1874,7 +1871,6 @@ struct AddCertificateView: View {
     @State private var p12URL: URL?
     @State private var provURL: URL?
     
-    // --- التعديل الأساسي: استخدام متغيرات مستقلة لكل FilePicker ---
     @State private var showP12Picker = false
     @State private var showProvPicker = false
 
@@ -1924,7 +1920,6 @@ struct AddCertificateView: View {
                     Button("Cancel") { dismiss() }
                 }
             }
-            // --- التعديل الأساسي: تضمين FilePickers كخلفية ---
             .background(
                 Group {
                     FilePicker(isPresented: $showP12Picker) { url in
