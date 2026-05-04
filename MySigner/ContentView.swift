@@ -280,7 +280,13 @@ struct SignerSheet: View {
 
     enum PickType: Identifiable {
         case ipa, p12, provision
-        var id: Int { switch self { case .ipa: return 0; case .p12: return 1; case .provision: return 2 } }
+        var id: Int {
+            switch self {
+            case .ipa: return 0
+            case .p12: return 1
+            case .provision: return 2
+            }
+        }
     }
 
     var allSelected: Bool { ipaURL != nil && p12URL != nil && provisionURL != nil }
@@ -345,11 +351,7 @@ struct SignerSheet: View {
                             .foregroundColor(.white)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 16)
-                            .background(
-                                allSelected && !isSigning
-                                ? Color.blue
-                                : Color.gray.opacity(0.4)
-                            )
+                            .background(allSelected && !isSigning ? Color.blue : Color.gray.opacity(0.4))
                             .cornerRadius(14)
                         }
                         .disabled(!allSelected || isSigning)
@@ -455,7 +457,7 @@ struct SignerSheet: View {
     }
 }
 
-// MARK: - Signing Engine
+// MARK: - Signing Engine (iOS Compatible)
 struct SigningEngine {
     static func sign(
         ipaURL: URL,
@@ -533,17 +535,47 @@ struct SigningEngine {
         return outputIPA
     }
 
+    // ✅ الإصلاح الرئيسي: استبدال Process بـ posix_spawn المتوافق مع iOS
     @discardableResult
     static func shell(_ command: String) -> String {
-        let task = Process()
-        task.launchPath = "/bin/sh"
-        task.arguments = ["-c", command]
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        task.standardError = pipe
-        task.launch()
-        task.waitUntilExit()
-        return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let argv: [UnsafeMutablePointer<CChar>?] = [
+            strdup("/bin/sh"),
+            strdup("-c"),
+            strdup(command),
+            nil
+        ]
+        defer { argv.compactMap { $0 }.forEach { free($0) } }
+
+        var pipeFds = [Int32](repeating: 0, count: 2)
+        guard pipe(&pipeFds) == 0 else { return "" }
+
+        var fileActions: posix_spawn_file_actions_t?
+        posix_spawn_file_actions_init(&fileActions)
+        posix_spawn_file_actions_adddup2(&fileActions, pipeFds[1], STDOUT_FILENO)
+        posix_spawn_file_actions_adddup2(&fileActions, pipeFds[1], STDERR_FILENO)
+        posix_spawn_file_actions_addclose(&fileActions, pipeFds[0])
+        posix_spawn_file_actions_addclose(&fileActions, pipeFds[1])
+
+        var pid: pid_t = 0
+        let spawnResult = posix_spawn(&pid, "/bin/sh", &fileActions, nil, argv, environ)
+        posix_spawn_file_actions_destroy(&fileActions)
+        close(pipeFds[1])
+
+        var output = ""
+        if spawnResult == 0 {
+            var data = Data()
+            var buf = [UInt8](repeating: 0, count: 4096)
+            while true {
+                let n = read(pipeFds[0], &buf, buf.count)
+                if n <= 0 { break }
+                data.append(contentsOf: buf[0..<n])
+            }
+            var status: Int32 = 0
+            waitpid(pid, &status, 0)
+            output = String(data: data, encoding: .utf8) ?? ""
+        }
+        close(pipeFds[0])
+        return output
     }
 }
 
