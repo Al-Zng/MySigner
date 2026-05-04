@@ -38,12 +38,15 @@ jobs:
           zip -r MySigner_unsigned.ipa Payload
           ls -lh MySigner_unsigned.ipa
 
-      - name: Install zsign dependencies and build
+      - name: Install zsign tool
         run: |
           brew install cmake openssl
+          rm -rf zsign
           git clone https://github.com/zhlynn/zsign.git
           cd zsign
-          mkdir build && cd build
+          rm -rf build
+          mkdir build
+          cd build
           cmake ..
           make -j$(sysctl -n hw.logicalcpu)
           sudo cp zsign /usr/local/bin/
