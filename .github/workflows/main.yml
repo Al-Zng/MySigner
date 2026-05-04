@@ -32,18 +32,18 @@ jobs:
             echo "ERROR: App not found"; ls -la build || true; exit 1
           fi
 
-          rm -rf Payload MySigner.ipa
+          rm -rf Payload MySigner_unsigned.ipa
           mkdir -p Payload
           cp -R "$APP_PATH" Payload/
           zip -r MySigner_unsigned.ipa Payload
           ls -lh MySigner_unsigned.ipa
 
-      - name: Install zsign
+      - name: Install zsign dependencies and build
         run: |
-          brew install openssl@3
-          git clone https://github.com/zhlynn/zsign
-          cd zsign
-          make
+          brew install pkg-config openssl
+          git clone https://github.com/zhlynn/zsign.git
+          cd zsign/build/macos
+          make clean && make
           sudo cp zsign /usr/local/bin/
 
       - name: Decrypt certificates
