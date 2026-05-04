@@ -40,15 +40,11 @@ jobs:
 
       - name: Install zsign tool
         run: |
-          brew install cmake openssl
+          brew install openssl
           rm -rf zsign
           git clone https://github.com/zhlynn/zsign.git
-          cd zsign
-          rm -rf build
-          mkdir build
-          cd build
-          cmake ..
-          make -j$(sysctl -n hw.logicalcpu)
+          cd zsign/build/macos
+          make clean && make
           sudo cp zsign /usr/local/bin/
 
       - name: Decrypt certificates
