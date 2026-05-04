@@ -40,11 +40,12 @@ jobs:
 
       - name: Install zsign dependencies and build
         run: |
-          brew install pkg-config openssl
-          git clone https://github.com/zhlynn/zsign
+          brew install cmake openssl
+          git clone https://github.com/zhlynn/zsign.git
           cd zsign
-          # The project now uses clang++ directly, no makefile needed.
-          clang++ -std=c++11 -stdlib=libc++ -O2 -I. main.cpp common/*.cpp -lcrypto -o zsign
+          mkdir build && cd build
+          cmake ..
+          make -j$(sysctl -n hw.logicalcpu)
           sudo cp zsign /usr/local/bin/
 
       - name: Decrypt certificates
