@@ -190,17 +190,17 @@ class AppStore: ObservableObject {
                     }
                 } else if let items = try? JSONDecoder().decode([RemoteAppItem].self, from: data) {
                     fetched = items.map {
-                        AppItem(
-                            name: $0.name, version: $0.version,
-                            bundleID: $0.bundleIdentifier, ipaURL: $0.downloadURL,
-                            iconURL: $0.iconURL,
-                            developerName: $0.developerName,
-                            appDescription: $0.localizedDescription,
-                            size: $0.size.map { s in
-                                let mb = Double(s) / 1_000_000
-                                return String(format: "%.1f MB", mb)
-                            }
-                        )
+AppItem(
+    name: $0.name, version: $0.version,
+    bundleID: $0.bundleIdentifier, ipaURL: $0.downloadURL,
+    iconURL: $0.iconURL,
+    developerName: $0.developerName,
+    appDescription: $0.localizedDescription,
+    size: $0.size.map { s in
+        let mb = Double(s) / 1_000_000
+        return String(format: "%.1f MB", mb)
+    }
+)
                     }
                 } else {
                     completion(.failure(URLError(.cannotParseResponse)))
