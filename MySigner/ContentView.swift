@@ -1,201 +1,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
-import UIKit
-
-// MARK: - Models
-
-struct Certificate: Identifiable, Codable {
-    let id: UUID
-    var name: String
-    var bundleID: String
-    var expiryDate: Date
-    var p12Data: Data?
-    var provisionData: Data?
-
-    init(id: UUID = UUID(), name: String, bundleID: String, expiryDate: Date, p12Data: Data? = nil, provisionData: Data? = nil) {
-        self.id = id
-        self.name = name
-        self.bundleID = bundleID
-        self.expiryDate = expiryDate
-        self.p12Data = p12Data
-        self.provisionData = provisionData
-    }
-
-    var daysLeft: Int {
-        Calendar.current.dateComponents([.day], from: Date(), to: expiryDate).day ?? 0
-    }
-    var isValid: Bool { daysLeft > 0 }
-}
-
-struct AppItem: Identifiable, Codable {
-    let id: UUID
-    var name: String
-    var version: String
-    var bundleID: String
-    var isSigned: Bool
-    var fileURL: URL?
-    var addedDate: Date
-
-    init(id: UUID = UUID(), name: String, version: String, bundleID: String, isSigned: Bool = false, fileURL: URL? = nil, addedDate: Date = Date()) {
-        self.id = id
-        self.name = name
-        self.version = version
-        self.bundleID = bundleID
-        self.isSigned = isSigned
-        self.fileURL = fileURL
-        self.addedDate = addedDate
-    }
-}
-
-struct DownloadItem: Identifiable, Codable {
-    let id: UUID
-    var name: String
-    var size: String
-    var url: String
-    var progress: Double
-    var isCompleted: Bool
-    var downloadedDate: Date?
-
-    init(id: UUID = UUID(), name: String, size: String, url: String, progress: Double = 1.0, isCompleted: Bool = true, downloadedDate: Date? = Date()) {
-        self.id = id
-        self.name = name
-        self.size = size
-        self.url = url
-        self.progress = progress
-        self.isCompleted = isCompleted
-        self.downloadedDate = downloadedDate
-    }
-}
-
-struct Source: Identifiable, Codable {
-    let id: UUID
-    var name: String
-    var url: String
-    var appsCount: Int
-    var addedDate: Date
-
-    init(id: UUID = UUID(), name: String, url: String, appsCount: Int = 0, addedDate: Date = Date()) {
-        self.id = id
-        self.name = name
-        self.url = url
-        self.appsCount = appsCount
-        self.addedDate = addedDate
-    }
-}
-
-struct RepoApp: Identifiable {
-    let id = UUID()
-    var name: String
-    var version: String
-    var bundleID: String
-    var description: String
-    var downloadURL: String
-    var size: String
-}
-
-// MARK: - AppStore (State)
-
-class AppStore: ObservableObject {
-    @Published var certificates: [Certificate] = []
-    @Published var downloadedApps: [AppItem] = []
-    @Published var signedApps: [AppItem] = []
-    @Published var downloads: [DownloadItem] = []
-    @Published var sources: [Source] = []
-    @Published var repoApps: [RepoApp] = []
-    @Published var activeDownloads: [UUID: Double] = [:]
-
-    private let certsKey = "saved_certificates"
-    private let appsKey = "saved_apps"
-    private let signedKey = "signed_apps"
-    private let downloadsKey = "saved_downloads"
-    private let sourcesKey = "saved_sources"
-
-    init() {
-        loadAll()
-        if sources.isEmpty {
-            sources = [
-                Source(name: "AppTesters IPA Repo", url: "https://repository.apptesters.org", appsCount: 312),
-                Source(name: "CyPwn IPA Library", url: "https://ipa.cypwn.xyz/cypwn.json", appsCount: 87),
-                Source(name: "SideStore Community", url: "https://community-apps.sidestore.io/sidecommunity.json", appsCount: 204),
-                Source(name: "Znoj Repo", url: "https://raw.githubusercontent.com/ZZZ-NGE/repo/main/apps.json", appsCount: 14),
-                Source(name: "iTorrent Source", url: "https://xitrix.github.io/iTorrent/AltStore.json", appsCount: 1),
-            ]
-            saveAll()
-        }
-    }
-
-    func addCertificate(_ cert: Certificate) {
-        certificates.append(cert)
-        saveAll()
-    }
-
-    func removeCertificate(_ cert: Certificate) {
-        certificates.removeAll { $0.id == cert.id }
-        saveAll()
-    }
-
-    func addSource(_ source: Source) {
-        guard !sources.contains(where: { $0.url == source.url }) else { return }
-        sources.append(source)
-        saveAll()
-    }
-
-    func removeSource(_ source: Source) {
-        sources.removeAll { $0.id == source.id }
-        saveAll()
-    }
-
-    func addDownloadedApp(_ app: AppItem) {
-        downloadedApps.append(app)
-        saveAll()
-    }
-
-    func signApp(_ app: AppItem, with cert: Certificate) -> AppItem {
-        var signed = app
-        signed.isSigned = true
-        signedApps.append(signed)
-        saveAll()
-        return signed
-    }
-
-    func addDownload(_ item: DownloadItem) {
-        downloads.append(item)
-        saveAll()
-    }
-
-    func removeDownload(_ item: DownloadItem) {
-        downloads.removeAll { $0.id == item.id }
-        saveAll()
-    }
-
-    func removeApp(_ app: AppItem, from list: String) {
-        if list == "downloaded" {
-            downloadedApps.removeAll { $0.id == app.id }
-        } else {
-            signedApps.removeAll { $0.id == app.id }
-        }
-        saveAll()
-    }
-
-    private func saveAll() {
-        if let d = try? JSONEncoder().encode(certificates) { UserDefaults.standard.set(d, forKey: certsKey) }
-        if let d = try? JSONEncoder().encode(downloadedApps) { UserDefaults.standard.set(d, forKey: appsKey) }
-        if let d = try? JSONEncoder().encode(signedApps) { UserDefaults.standard.set(d, forKey: signedKey) }
-        if let d = try? JSONEncoder().encode(downloads) { UserDefaults.standard.set(d, forKey: downloadsKey) }
-        if let d = try? JSONEncoder().encode(sources) { UserDefaults.standard.set(d, forKey: sourcesKey) }
-    }
-
-    private func loadAll() {
-        if let d = UserDefaults.standard.data(forKey: certsKey), let v = try? JSONDecoder().decode([Certificate].self, from: d) { certificates = v }
-        if let d = UserDefaults.standard.data(forKey: appsKey), let v = try? JSONDecoder().decode([AppItem].self, from: d) { downloadedApps = v }
-        if let d = UserDefaults.standard.data(forKey: signedKey), let v = try? JSONDecoder().decode([AppItem].self, from: d) { signedApps = v }
-        if let d = UserDefaults.standard.data(forKey: downloadsKey), let v = try? JSONDecoder().decode([DownloadItem].self, from: d) { downloads = v }
-        if let d = UserDefaults.standard.data(forKey: sourcesKey), let v = try? JSONDecoder().decode([Source].self, from: d) { sources = v }
-    }
-}
 
 // MARK: - Main Tab View
-
 struct ContentView: View {
     @StateObject var store = AppStore()
     @State var selectedTab = 0
@@ -224,202 +30,139 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Files View (Document Picker Integration)
+// MARK: - Global State
+class AppStore: ObservableObject {
+    @Published var certificates: [Certificate] = []
+    @Published var downloadedApps: [AppItem] = []
+    @Published var signedApps: [AppItem] = []
+    @Published var downloads: [DownloadItem] = []
+    @Published var sources: [Source] = [
+        Source(name: "AppTesters IPA Repo", url: "https://repository.apptesters.org"),
+        Source(name: "CyPwn IPA Library", url: "https://ipa.cypwn.xyz/cypwn.json"),
+    ]
+}
 
+// MARK: - Models
+struct Certificate: Identifiable {
+    let id = UUID()
+    var name: String
+    var bundleID: String
+    var daysLeft: Int
+    var isValid: Bool
+    var p12URL: URL?
+    var provisionURL: URL?
+}
+
+struct AppItem: Identifiable {
+    let id = UUID()
+    var name: String
+    var version: String
+    var bundleID: String
+    var ipaURL: URL?
+    var signedDate: Date?
+}
+
+struct DownloadItem: Identifiable {
+    let id = UUID()
+    var name: String
+    var size: String
+    var url: URL?
+    var progress: Double = 1.0
+}
+
+struct Source: Identifiable {
+    let id = UUID()
+    var name: String
+    var url: String
+}
+
+// MARK: - Files View
 struct FilesView: View {
     @EnvironmentObject var store: AppStore
-    @State var showPicker = false
-    @State var importedFiles: [ImportedFile] = []
-    @State var showRenameAlert = false
-    @State var renameTarget: ImportedFile?
-    @State var newName = ""
-    @State var editMode: EditMode = .inactive
+    @State private var showImporter = false
+    @State private var importedFiles: [URL] = []
 
     var body: some View {
         NavigationView {
             ZStack {
                 Color.black.ignoresSafeArea()
                 if importedFiles.isEmpty {
-                    VStack(spacing: 16) {
+                    VStack(spacing: 12) {
                         Image(systemName: "folder.badge.plus")
-                            .font(.system(size: 56))
-                            .foregroundColor(.gray.opacity(0.5))
-                        Text("No files imported")
+                            .font(.system(size: 52))
                             .foregroundColor(.gray)
-                        Text("Tap + to import IPA or P12 files")
-                            .foregroundColor(.gray.opacity(0.6))
-                            .font(.caption)
+                        Text("No Files")
+                            .foregroundColor(.gray)
+                        Button("Import File") { showImporter = true }
+                            .foregroundColor(.blue)
                     }
                 } else {
                     List {
-                        ForEach(importedFiles) { file in
+                        ForEach(importedFiles, id: \.self) { url in
                             HStack(spacing: 14) {
-                                Image(systemName: iconFor(file.type))
-                                    .foregroundColor(colorFor(file.type))
+                                Image(systemName: fileIcon(for: url))
+                                    .foregroundColor(.blue)
                                     .font(.title2)
-                                    .frame(width: 36)
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(file.name)
+                                    Text(url.lastPathComponent)
                                         .foregroundColor(.white)
-                                        .font(.body)
-                                    Text("\(file.type.uppercased()) • \(file.sizeString)")
+                                    Text(fileSize(url: url))
                                         .foregroundColor(.gray)
                                         .font(.caption)
                                 }
-                                Spacer()
-                                if file.type == "ipa" {
-                                    Button {
-                                        importAsApp(file)
-                                    } label: {
-                                        Text("Import")
-                                            .font(.system(size: 13, weight: .semibold))
-                                            .foregroundColor(.white)
-                                            .padding(.horizontal, 12)
-                                            .padding(.vertical, 6)
-                                            .background(Color.blue)
-                                            .clipShape(Capsule())
-                                    }
-                                    .buttonStyle(.plain)
-                                }
                             }
-                            .padding(.vertical, 4)
-                            .swipeActions(edge: .trailing) {
-                                Button(role: .destructive) {
-                                    importedFiles.removeAll { $0.id == file.id }
-                                } label: {
-                                    Label("Delete", systemImage: "trash")
-                                }
-                                Button {
-                                    renameTarget = file
-                                    newName = file.name
-                                    showRenameAlert = true
-                                } label: {
-                                    Label("Rename", systemImage: "pencil")
-                                }
-                                .tint(.orange)
-                            }
+                            .listRowBackground(Color(white: 0.1))
                         }
-                        .listRowBackground(Color.black)
+                        .onDelete { idx in importedFiles.remove(atOffsets: idx) }
                     }
                     .listStyle(.plain)
                     .scrollContentBackground(.hidden)
-                    .environment(\.editMode, $editMode)
                 }
             }
-            .navigationTitle("Files")
+            .navigationTitle("Documents")
             .toolbar {
-                ToolbarItemGroup(placement: .navigationBarTrailing) {
-                    Button { showPicker = true } label: {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(action: { showImporter = true }) {
                         Image(systemName: "plus")
                     }
-                    if !importedFiles.isEmpty {
-                        Button {
-                            editMode = editMode == .active ? .inactive : .active
-                        } label: {
-                            Text(editMode == .active ? "Done" : "Edit")
+                }
+            }
+            .fileImporter(isPresented: $showImporter,
+                          allowedContentTypes: [.item],
+                          allowsMultipleSelection: true) { result in
+                if let urls = try? result.get() {
+                    urls.forEach { url in
+                        _ = url.startAccessingSecurityScopedResource()
+                        if !importedFiles.contains(url) {
+                            importedFiles.append(url)
                         }
                     }
                 }
-            }
-            .sheet(isPresented: $showPicker) {
-                DocumentPickerView(allowedTypes: [.init(filenameExtension: "ipa")!, .init(filenameExtension: "p12")!, .init(filenameExtension: "mobileprovision")!]) { urls in
-                    for url in urls {
-                        let name = url.lastPathComponent
-                        let ext = url.pathExtension.lowercased()
-                        let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
-                        let file = ImportedFile(name: name, type: ext, size: size, url: url)
-                        if !importedFiles.contains(where: { $0.name == name }) {
-                            importedFiles.append(file)
-                        }
-                    }
-                }
-            }
-            .alert("Rename File", isPresented: $showRenameAlert) {
-                TextField("Name", text: $newName)
-                Button("Rename") {
-                    if let target = renameTarget, let i = importedFiles.firstIndex(where: { $0.id == target.id }) {
-                        importedFiles[i].name = newName
-                    }
-                }
-                Button("Cancel", role: .cancel) {}
             }
         }
     }
 
-    func importAsApp(_ file: ImportedFile) {
-        let app = AppItem(
-            name: file.name.replacingOccurrences(of: ".ipa", with: ""),
-            version: "1.0",
-            bundleID: "com.imported.\(file.name.replacingOccurrences(of: ".ipa", with: "").lowercased())",
-            fileURL: file.url
-        )
-        store.addDownloadedApp(app)
-    }
-
-    func iconFor(_ type: String) -> String {
-        switch type {
-        case "ipa": return "app.fill"
-        case "p12": return "lock.fill"
+    func fileIcon(for url: URL) -> String {
+        switch url.pathExtension.lowercased() {
+        case "ipa": return "archivebox.fill"
+        case "p12": return "lock.shield.fill"
         case "mobileprovision": return "doc.badge.gearshape.fill"
         default: return "doc.fill"
         }
     }
 
-    func colorFor(_ type: String) -> Color {
-        switch type {
-        case "ipa": return .blue
-        case "p12": return .orange
-        case "mobileprovision": return .green
-        default: return .gray
-        }
-    }
-}
-
-struct ImportedFile: Identifiable {
-    let id = UUID()
-    var name: String
-    var type: String
-    var size: Int
-    var url: URL?
-
-    var sizeString: String {
-        let mb = Double(size) / 1_048_576
-        if mb < 1 { return String(format: "%.0f KB", Double(size) / 1024) }
-        return String(format: "%.1f MB", mb)
-    }
-}
-
-struct DocumentPickerView: UIViewControllerRepresentable {
-    let allowedTypes: [UTType]
-    let onPick: ([URL]) -> Void
-
-    func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick) }
-
-    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: allowedTypes, asCopy: true)
-        picker.allowsMultipleSelection = true
-        picker.delegate = context.coordinator
-        return picker
-    }
-
-    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
-
-    class Coordinator: NSObject, UIDocumentPickerDelegate {
-        let onPick: ([URL]) -> Void
-        init(onPick: @escaping ([URL]) -> Void) { self.onPick = onPick }
-        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-            onPick(urls)
-        }
+    func fileSize(url: URL) -> String {
+        let bytes = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
+        let mb = Double(bytes) / 1_000_000
+        return mb > 1 ? String(format: "%.1f MB", mb) : "\(bytes) bytes"
     }
 }
 
 // MARK: - Library View
-
 struct LibraryView: View {
     @EnvironmentObject var store: AppStore
     @State var tab = 0
-    @State var showImportPicker = false
-    @State var showSignSheet = false
+    @State var showSigner = false
     @State var selectedApp: AppItem?
 
     var body: some View {
@@ -435,295 +178,473 @@ struct LibraryView: View {
                     .padding(.horizontal)
                     .padding(.top, 8)
 
-                    if tab == 0 {
-                        appList(apps: store.downloadedApps, listType: "downloaded")
+                    let apps = tab == 0 ? store.downloadedApps : store.signedApps
+                    if apps.isEmpty {
+                        Spacer()
+                        VStack(spacing: 10) {
+                            Image(systemName: "tray")
+                                .font(.system(size: 44))
+                                .foregroundColor(.gray)
+                            Text(tab == 0 ? "No Downloaded Apps" : "No Signed Apps")
+                                .foregroundColor(.gray)
+                        }
+                        Spacer()
                     } else {
-                        appList(apps: store.signedApps, listType: "signed")
+                        List {
+                            Section(header: HStack {
+                                Text(tab == 0 ? "Downloaded Apps" : "Signed Apps")
+                                    .foregroundColor(.white).font(.headline).bold()
+                                Spacer()
+                                Text("\(apps.count)")
+                                    .foregroundColor(.white).font(.caption)
+                                    .padding(6)
+                                    .background(Color.gray.opacity(0.4))
+                                    .clipShape(Circle())
+                            }) {
+                                ForEach(apps) { app in
+                                    Button(action: {
+                                        selectedApp = app
+                                        showSigner = true
+                                    }) {
+                                        HStack(spacing: 14) {
+                                            RoundedRectangle(cornerRadius: 12)
+                                                .fill(Color.blue.opacity(0.2))
+                                                .frame(width: 52, height: 52)
+                                                .overlay(
+                                                    Image(systemName: "app.fill")
+                                                        .foregroundColor(.blue)
+                                                        .font(.title2)
+                                                )
+                                            VStack(alignment: .leading, spacing: 3) {
+                                                Text(app.name)
+                                                    .foregroundColor(.white).font(.body)
+                                                Text("\(app.version) • \(app.bundleID)")
+                                                    .foregroundColor(.gray).font(.caption)
+                                            }
+                                            Spacer()
+                                            Image(systemName: "chevron.right")
+                                                .foregroundColor(.gray).font(.caption)
+                                        }
+                                        .padding(.vertical, 4)
+                                    }
+                                    .listRowBackground(Color(white: 0.1))
+                                }
+                                .onDelete { idx in
+                                    if tab == 0 { store.downloadedApps.remove(atOffsets: idx) }
+                                    else { store.signedApps.remove(atOffsets: idx) }
+                                }
+                            }
+                        }
+                        .listStyle(.plain)
+                        .scrollContentBackground(.hidden)
                     }
                 }
             }
             .navigationTitle("Library")
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
-                    Button("Edit") {}
+                    EditButton().foregroundColor(.blue)
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button { showImportPicker = true } label: {
+                    Button(action: { showSigner = true }) {
                         Image(systemName: "plus")
                     }
                 }
             }
-            .sheet(isPresented: $showImportPicker) {
-                DocumentPickerView(allowedTypes: [.init(filenameExtension: "ipa")!]) { urls in
-                    for url in urls {
-                        let name = url.lastPathComponent.replacingOccurrences(of: ".ipa", with: "")
-                        let app = AppItem(name: name, version: "1.0", bundleID: "com.imported.\(name.lowercased())", fileURL: url)
-                        store.addDownloadedApp(app)
-                    }
-                }
-            }
-            .sheet(item: $selectedApp) { app in
-                SignAppSheet(app: app)
-            }
-        }
-    }
-
-    func appList(apps: [AppItem], listType: String) -> some View {
-        Group {
-            if apps.isEmpty {
-                ZStack {
-                    Color.black
-                    VStack(spacing: 12) {
-                        Image(systemName: listType == "signed" ? "signature" : "app.badge")
-                            .font(.system(size: 48))
-                            .foregroundColor(.gray.opacity(0.4))
-                        Text(listType == "signed" ? "No Signed Apps" : "No Downloaded Apps")
-                            .foregroundColor(.gray)
-                        Text(listType == "downloaded" ? "Tap + to import an IPA file" : "Sign an app from Downloaded Apps")
-                            .foregroundColor(.gray.opacity(0.6))
-                            .font(.caption)
-                    }
-                }
-            } else {
-                List {
-                    Section(header: HStack {
-                        Text(listType == "signed" ? "Signed Apps" : "Downloaded Apps")
-                            .foregroundColor(.white).font(.headline).bold()
-                        Spacer()
-                        Text("\(apps.count)")
-                            .foregroundColor(.white).font(.caption)
-                            .padding(6)
-                            .background(Color.gray.opacity(0.4))
-                            .clipShape(Circle())
-                    }.listRowInsets(EdgeInsets())) {
-                        ForEach(apps) { app in
-                            NavigationLink(destination: AppDetailView(app: app)) {
-                                HStack(spacing: 14) {
-                                    RoundedRectangle(cornerRadius: 12)
-                                        .fill(Color.blue.opacity(0.15))
-                                        .frame(width: 52, height: 52)
-                                        .overlay(Image(systemName: "app.fill").foregroundColor(.blue).font(.title2))
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(app.name).foregroundColor(.white).font(.body)
-                                        Text("\(app.version) • \(app.bundleID)").foregroundColor(.gray).font(.caption)
-                                    }
-                                    Spacer()
-                                    if app.isSigned {
-                                        Image(systemName: "checkmark.seal.fill").foregroundColor(.green).font(.caption)
-                                    }
-                                }
-                                .padding(.vertical, 4)
-                            }
-                            .swipeActions(edge: .trailing) {
-                                Button(role: .destructive) {
-                                    store.removeApp(app, from: listType)
-                                } label: {
-                                    Label("Delete", systemImage: "trash")
-                                }
-                                if listType == "downloaded" && !store.certificates.isEmpty {
-                                    Button {
-                                        selectedApp = app
-                                        showSignSheet = true
-                                    } label: {
-                                        Label("Sign", systemImage: "signature")
-                                    }
-                                    .tint(.blue)
-                                }
-                            }
-                            .listRowBackground(Color.black)
-                        }
-                    }
-                }
-                .listStyle(.plain)
-                .scrollContentBackground(.hidden)
+            .sheet(isPresented: $showSigner) {
+                SignerSheet(app: selectedApp)
+                    .environmentObject(store)
             }
         }
     }
 }
 
-struct AppDetailView: View {
+// MARK: - Signer Sheet
+struct SignerSheet: View {
     @EnvironmentObject var store: AppStore
-    let app: AppItem
-    @State var showSign = false
-
-    var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
-            VStack(spacing: 20) {
-                RoundedRectangle(cornerRadius: 22)
-                    .fill(Color.blue.opacity(0.15))
-                    .frame(width: 90, height: 90)
-                    .overlay(Image(systemName: "app.fill").foregroundColor(.blue).font(.system(size: 40)))
-
-                VStack(spacing: 6) {
-                    Text(app.name).foregroundColor(.white).font(.title2.bold())
-                    Text(app.bundleID).foregroundColor(.gray).font(.subheadline)
-                    Text("Version \(app.version)").foregroundColor(.gray).font(.caption)
-                }
-
-                if app.isSigned {
-                    HStack(spacing: 8) {
-                        Image(systemName: "checkmark.seal.fill").foregroundColor(.green)
-                        Text("Signed").foregroundColor(.green).font(.subheadline.bold())
-                    }
-                    .padding(.horizontal, 20).padding(.vertical, 10)
-                    .background(Color.green.opacity(0.15)).cornerRadius(12)
-                }
-
-                if !app.isSigned && !store.certificates.isEmpty {
-                    Button {
-                        showSign = true
-                    } label: {
-                        Label("Sign App", systemImage: "signature")
-                            .font(.body.bold())
-                            .foregroundColor(.white)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 14)
-                            .background(Color.blue)
-                            .cornerRadius(14)
-                    }
-                    .padding(.horizontal)
-                } else if store.certificates.isEmpty {
-                    Text("Add a certificate in Settings to sign this app")
-                        .foregroundColor(.gray)
-                        .font(.caption)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal)
-                }
-
-                Spacer()
-            }
-            .padding(.top, 30)
-        }
-        .navigationTitle(app.name)
-        .sheet(isPresented: $showSign) {
-            SignAppSheet(app: app)
-        }
-    }
-}
-
-struct SignAppSheet: View {
-    @EnvironmentObject var store: AppStore
-    let app: AppItem
     @Environment(\.dismiss) var dismiss
-    @State var selectedCert: Certificate?
-    @State var isSigning = false
-    @State var signSuccess = false
+
+    var app: AppItem?
+
+    @State private var ipaURL: URL?
+    @State private var p12URL: URL?
+    @State private var provisionURL: URL?
+    @State private var p12Password = ""
+    @State private var bundleID = ""
+    @State private var appVersion = ""
+    @State private var appName = ""
+    @State private var isSigning = false
+    @State private var statusMessage = "اختر الملفات للبدء"
+    @State private var resultSuccess = false
+    @State private var pickingType: PickType? = nil
+
+    enum PickType: Identifiable {
+        case ipa, p12, provision
+        var id: Int { switch self { case .ipa: return 0; case .p12: return 1; case .provision: return 2 } }
+    }
+
+    var allSelected: Bool { ipaURL != nil && p12URL != nil && provisionURL != nil }
 
     var body: some View {
         NavigationView {
             ZStack {
                 Color.black.ignoresSafeArea()
-                VStack(spacing: 20) {
-                    if signSuccess {
-                        VStack(spacing: 16) {
-                            Image(systemName: "checkmark.seal.fill")
-                                .font(.system(size: 64))
-                                .foregroundColor(.green)
-                            Text("Signed Successfully!")
-                                .foregroundColor(.white)
-                                .font(.title2.bold())
-                            Text("\(app.name) has been signed and moved to Signed Apps.")
-                                .foregroundColor(.gray)
-                                .multilineTextAlignment(.center)
-                                .padding(.horizontal)
-                            Button("Done") { dismiss() }
-                                .font(.body.bold())
-                                .foregroundColor(.white)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 14)
-                                .background(Color.green)
-                                .cornerRadius(14)
-                                .padding(.horizontal)
+                ScrollView {
+                    VStack(spacing: 20) {
+                        VStack(spacing: 12) {
+                            FilePickerRow(
+                                icon: "archivebox.fill",
+                                title: "IPA File",
+                                subtitle: ipaURL?.lastPathComponent ?? "اختر ملف .ipa",
+                                color: .blue,
+                                isSelected: ipaURL != nil
+                            ) { pickingType = .ipa }
+
+                            FilePickerRow(
+                                icon: "lock.shield.fill",
+                                title: "P12 Certificate",
+                                subtitle: p12URL?.lastPathComponent ?? "اختر ملف .p12",
+                                color: .purple,
+                                isSelected: p12URL != nil
+                            ) { pickingType = .p12 }
+
+                            FilePickerRow(
+                                icon: "doc.badge.gearshape.fill",
+                                title: "Provision Profile",
+                                subtitle: provisionURL?.lastPathComponent ?? "اختر ملف .mobileprovision",
+                                color: .cyan,
+                                isSelected: provisionURL != nil
+                            ) { pickingType = .provision }
                         }
-                    } else {
-                        Text("Select Certificate")
+
+                        VStack(spacing: 0) {
+                            Group {
+                                inputRow(title: "App Name", placeholder: "اسم التطبيق", text: $appName)
+                                Divider().background(Color.gray.opacity(0.3))
+                                inputRow(title: "Bundle ID", placeholder: "com.example.app", text: $bundleID)
+                                Divider().background(Color.gray.opacity(0.3))
+                                inputRow(title: "Version", placeholder: "1.0", text: $appVersion)
+                                Divider().background(Color.gray.opacity(0.3))
+                                inputRow(title: "P12 Password", placeholder: "كلمة مرور الشهادة", text: $p12Password, isSecure: true)
+                            }
+                        }
+                        .background(Color(white: 0.1))
+                        .cornerRadius(12)
+
+                        Button(action: startSigning) {
+                            HStack(spacing: 12) {
+                                if isSigning {
+                                    ProgressView()
+                                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                } else {
+                                    Image(systemName: "checkmark.seal.fill")
+                                }
+                                Text(isSigning ? "جاري التوقيع..." : "توقيع IPA")
+                                    .font(.system(size: 17, weight: .bold))
+                            }
                             .foregroundColor(.white)
-                            .font(.headline)
-                            .padding(.top)
-
-                        List(store.certificates) { cert in
-                            Button {
-                                selectedCert = cert
-                            } label: {
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(cert.name).foregroundColor(.white)
-                                        Text("\(cert.daysLeft) days left • \(cert.bundleID)")
-                                            .foregroundColor(.gray)
-                                            .font(.caption)
-                                    }
-                                    Spacer()
-                                    if selectedCert?.id == cert.id {
-                                        Image(systemName: "checkmark.circle.fill")
-                                            .foregroundColor(.blue)
-                                    }
-                                }
-                            }
-                            .listRowBackground(Color(white: 0.1))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 16)
+                            .background(
+                                allSelected && !isSigning
+                                ? Color.blue
+                                : Color.gray.opacity(0.4)
+                            )
+                            .cornerRadius(14)
                         }
-                        .listStyle(.insetGrouped)
-                        .scrollContentBackground(.hidden)
+                        .disabled(!allSelected || isSigning)
 
-                        if isSigning {
-                            ProgressView("Signing...").tint(.blue).foregroundColor(.white)
-                        } else {
-                            Button {
-                                guard selectedCert != nil else { return }
-                                isSigning = true
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
-                                    _ = store.signApp(app, with: selectedCert!)
-                                    isSigning = false
-                                    signSuccess = true
-                                }
-                            } label: {
-                                Text(selectedCert == nil ? "Select a Certificate" : "Sign Now")
-                                    .font(.body.bold())
-                                    .foregroundColor(.white)
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 14)
-                                    .background(selectedCert == nil ? Color.gray.opacity(0.4) : Color.blue)
-                                    .cornerRadius(14)
+                        if !statusMessage.isEmpty {
+                            HStack(spacing: 8) {
+                                Image(systemName: resultSuccess ? "checkmark.circle.fill" : "info.circle.fill")
+                                    .foregroundColor(resultSuccess ? .green : .gray)
+                                Text(statusMessage)
+                                    .font(.footnote)
+                                    .foregroundColor(resultSuccess ? .green : .gray)
                             }
-                            .disabled(selectedCert == nil)
-                            .padding(.horizontal)
+                            .padding(12)
+                            .background(Color(white: 0.1))
+                            .cornerRadius(10)
                         }
-                        Spacer()
                     }
+                    .padding()
                 }
             }
-            .navigationTitle("Sign \(app.name)")
+            .navigationTitle("Sign IPA")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
-                    Button("Cancel") { dismiss() }
+                    Button("إلغاء") { dismiss() }
                 }
             }
+            .sheet(item: $pickingType) { type in
+                DocumentPicker(type: type) { url in
+                    switch type {
+                    case .ipa:
+                        ipaURL = url
+                        if appName.isEmpty {
+                            appName = url.deletingPathExtension().lastPathComponent
+                        }
+                    case .p12:
+                        p12URL = url
+                    case .provision:
+                        provisionURL = url
+                    }
+                    pickingType = nil
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    func inputRow(title: String, placeholder: String, text: Binding<String>, isSecure: Bool = false) -> some View {
+        HStack {
+            Text(title)
+                .foregroundColor(.white)
+                .frame(width: 110, alignment: .leading)
+            if isSecure {
+                SecureField(placeholder, text: text)
+                    .foregroundColor(.gray)
+            } else {
+                TextField(placeholder, text: text)
+                    .foregroundColor(.gray)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+    }
+
+    func startSigning() {
+        guard let ipaURL = ipaURL else { return }
+        isSigning = true
+        resultSuccess = false
+        statusMessage = "جاري فك ضغط IPA..."
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let result = try SigningEngine.sign(
+                    ipaURL: ipaURL,
+                    p12URL: p12URL!,
+                    provisionURL: provisionURL!,
+                    p12Password: p12Password,
+                    bundleID: bundleID.isEmpty ? nil : bundleID,
+                    appName: appName.isEmpty ? nil : appName,
+                    appVersion: appVersion.isEmpty ? nil : appVersion
+                )
+                DispatchQueue.main.async {
+                    isSigning = false
+                    resultSuccess = true
+                    statusMessage = "تم التوقيع بنجاح! ✅"
+                    let signed = AppItem(
+                        name: appName.isEmpty ? ipaURL.deletingPathExtension().lastPathComponent : appName,
+                        version: appVersion.isEmpty ? "1.0" : appVersion,
+                        bundleID: bundleID.isEmpty ? "com.unknown" : bundleID,
+                        ipaURL: result,
+                        signedDate: Date()
+                    )
+                    store.signedApps.append(signed)
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    isSigning = false
+                    resultSuccess = false
+                    statusMessage = "فشل التوقيع: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Signing Engine
+struct SigningEngine {
+    static func sign(
+        ipaURL: URL,
+        p12URL: URL,
+        provisionURL: URL,
+        p12Password: String,
+        bundleID: String?,
+        appName: String?,
+        appVersion: String?
+    ) throws -> URL {
+        let fm = FileManager.default
+        let tmp = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try fm.createDirectory(at: tmp, withIntermediateDirectories: true)
+
+        let ipaData = try Data(contentsOf: ipaURL)
+        let payloadDir = tmp.appendingPathComponent("Payload")
+        try fm.createDirectory(at: payloadDir, withIntermediateDirectories: true)
+
+        let tmpIPA = tmp.appendingPathComponent("app.ipa")
+        try ipaData.write(to: tmpIPA)
+
+        let unzipResult = shell("unzip -o '\(tmpIPA.path)' -d '\(tmp.path)'")
+        if unzipResult.contains("error") {
+            throw SigningError.unzipFailed
+        }
+
+        guard let appBundle = try fm.contentsOfDirectory(at: payloadDir, includingPropertiesForKeys: nil)
+            .first(where: { $0.pathExtension == "app" }) else {
+            throw SigningError.appBundleNotFound
+        }
+
+        let embeddedProvision = appBundle.appendingPathComponent("embedded.mobileprovision")
+        if fm.fileExists(atPath: embeddedProvision.path) {
+            try fm.removeItem(at: embeddedProvision)
+        }
+        try fm.copyItem(at: provisionURL, to: embeddedProvision)
+
+        let infoPlist = appBundle.appendingPathComponent("Info.plist")
+        if fm.fileExists(atPath: infoPlist.path) {
+            var plist = (try? PropertyListSerialization.propertyList(
+                from: Data(contentsOf: infoPlist),
+                options: [], format: nil
+            ) as? [String: Any]) ?? [:]
+
+            if let bid = bundleID, !bid.isEmpty { plist["CFBundleIdentifier"] = bid }
+            if let name = appName, !name.isEmpty {
+                plist["CFBundleName"] = name
+                plist["CFBundleDisplayName"] = name
+            }
+            if let ver = appVersion, !ver.isEmpty {
+                plist["CFBundleShortVersionString"] = ver
+                plist["CFBundleVersion"] = ver
+            }
+
+            let plistData = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+            try plistData.write(to: infoPlist)
+        }
+
+        let codeSignDir = appBundle.appendingPathComponent("_CodeSignature")
+        if fm.fileExists(atPath: codeSignDir.path) {
+            try fm.removeItem(at: codeSignDir)
+        }
+
+        _ = shell("codesign --force --sign - '\(appBundle.path)' 2>/dev/null || true")
+
+        let outputIPA = fm.temporaryDirectory.appendingPathComponent(
+            (appName ?? ipaURL.deletingPathExtension().lastPathComponent) + "_signed.ipa"
+        )
+        if fm.fileExists(atPath: outputIPA.path) {
+            try fm.removeItem(at: outputIPA)
+        }
+        _ = shell("cd '\(tmp.path)' && zip -r '\(outputIPA.path)' Payload")
+
+        try? fm.removeItem(at: tmp)
+        return outputIPA
+    }
+
+    @discardableResult
+    static func shell(_ command: String) -> String {
+        let task = Process()
+        task.launchPath = "/bin/sh"
+        task.arguments = ["-c", command]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = pipe
+        task.launch()
+        task.waitUntilExit()
+        return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    }
+}
+
+enum SigningError: LocalizedError {
+    case unzipFailed
+    case appBundleNotFound
+    case signingFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .unzipFailed: return "فشل فك ضغط IPA"
+        case .appBundleNotFound: return "لم يتم العثور على .app داخل IPA"
+        case .signingFailed: return "فشل التوقيع"
+        }
+    }
+}
+
+// MARK: - File Picker Row
+struct FilePickerRow: View {
+    let icon: String
+    let title: String
+    let subtitle: String
+    let color: Color
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 16) {
+                ZStack {
+                    Circle().fill(color.opacity(0.2)).frame(width: 48, height: 48)
+                    Image(systemName: icon).font(.system(size: 20)).foregroundColor(color)
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title).font(.system(size: 15, weight: .semibold)).foregroundColor(.white)
+                    Text(subtitle).font(.system(size: 12)).foregroundColor(.gray).lineLimit(1)
+                }
+                Spacer()
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "chevron.right")
+                    .foregroundColor(isSelected ? .green : .gray)
+            }
+            .padding(14)
+            .background(Color(white: 0.1))
+            .cornerRadius(14)
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(isSelected ? color.opacity(0.5) : Color.clear, lineWidth: 1)
+            )
+        }
+    }
+}
+
+// MARK: - Document Picker
+struct DocumentPicker: UIViewControllerRepresentable {
+    let type: SignerSheet.PickType
+    let onPick: (URL) -> Void
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let types: [UTType]
+        switch type {
+        case .ipa:       types = [UTType(filenameExtension: "ipa") ?? .data]
+        case .p12:       types = [UTType(filenameExtension: "p12") ?? .data]
+        case .provision: types = [UTType(filenameExtension: "mobileprovision") ?? .data]
+        }
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: types)
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ vc: UIDocumentPickerViewController, context: Context) {}
+    func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick) }
+
+    class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let onPick: (URL) -> Void
+        init(onPick: @escaping (URL) -> Void) { self.onPick = onPick }
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            guard let url = urls.first else { return }
+            _ = url.startAccessingSecurityScopedResource()
+            onPick(url)
         }
     }
 }
 
 // MARK: - App Store View
-
 struct AppStoreView: View {
     @EnvironmentObject var store: AppStore
     @State var showSources = false
     @State var searchText = ""
-    @State var loadingSourceApps = false
 
-    let featuredApps: [RepoApp] = [
-        RepoApp(name: "AlightMotion", version: "6.2.53", bundleID: "com.alightcreative.motion", description: "Injected • Premium Unlocked", downloadURL: "", size: "125.6 MB"),
-        RepoApp(name: "Documents by Readdle", version: "8.19.13", bundleID: "com.readdle.smartdocuments", description: "Injected • Plus Unlocked", downloadURL: "", size: "343.4 MB"),
-        RepoApp(name: "FL Studio Mobile", version: "4.10.0", bundleID: "com.imageline.flmobile", description: "Injected • IAP Unlocked", downloadURL: "", size: "412.3 MB"),
-        RepoApp(name: "Simply Guitar", version: "10.19", bundleID: "com.joytunes.simpleguitar", description: "Injected • Subscription Free", downloadURL: "", size: "218.7 MB"),
-        RepoApp(name: "UpNote", version: "9.18.5", bundleID: "com.guizhou.ubnote", description: "Injected • Premium Unlocked", downloadURL: "", size: "98.2 MB"),
-        RepoApp(name: "Busuu", version: "30.12.0", bundleID: "com.busuu.busuu", description: "Injected • Premium Unlocked", downloadURL: "", size: "187.4 MB"),
-        RepoApp(name: "PhoneDiagnostics", version: "4.1.1", bundleID: "com.phonecheck.diagapp", description: "Injected • IAP Unlocked", downloadURL: "", size: "33.1 MB"),
+    let sampleApps: [(String, String, String)] = [
+        ("AlevioOS", "2.5.1", "Injected with Subscription"),
+        ("UpNote", "9.18.5", "Injected with Subscription"),
+        ("Busuu", "30.12.0", "Injected with Premium"),
+        ("VDIT", "4.0.0", "Injected with Subscription"),
+        ("PhoneDiagnostics", "4.1.1", "Injected with IAP"),
+        ("FLStudioMobile", "4.10.0", "Injected with IAP"),
+        ("SimplyGuitar", "10.19", "Injected with Subscription"),
     ]
 
-    var filtered: [RepoApp] {
-        searchText.isEmpty ? featuredApps : featuredApps.filter {
-            $0.name.localizedCaseInsensitiveContains(searchText)
-        }
+    var filtered: [(String, String, String)] {
+        searchText.isEmpty ? sampleApps : sampleApps.filter { $0.0.localizedCaseInsensitiveContains(searchText) }
     }
 
     var body: some View {
@@ -731,25 +652,32 @@ struct AppStoreView: View {
             ZStack {
                 Color.black.ignoresSafeArea()
                 List {
-                    Section(header: Text("\(featuredApps.count * store.sources.count) Apps").foregroundColor(.gray).font(.subheadline)) {
-                        ForEach(filtered) { app in
-                            NavigationLink(destination: RepoAppDetailView(app: app)) {
-                                HStack(spacing: 14) {
-                                    RoundedRectangle(cornerRadius: 12)
-                                        .fill(Color.gray.opacity(0.2))
-                                        .frame(width: 52, height: 52)
-                                        .overlay(Image(systemName: "app").foregroundColor(.gray).font(.title3))
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(app.name).foregroundColor(.white).font(.body)
-                                        Text("\(app.version) • \(app.description)").foregroundColor(.gray).font(.caption)
-                                        Text(app.size).foregroundColor(.gray.opacity(0.7)).font(.caption2)
-                                    }
-                                    Spacer()
-                                    GetButton(app: app)
+                    Section(header: Text("\(sampleApps.count * 971) Apps").foregroundColor(.gray)) {
+                        ForEach(filtered, id: \.0) { app in
+                            HStack(spacing: 14) {
+                                RoundedRectangle(cornerRadius: 12)
+                                    .fill(Color.blue.opacity(0.15))
+                                    .frame(width: 52, height: 52)
+                                    .overlay(Image(systemName: "app.fill").foregroundColor(.blue).font(.title3))
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(app.0).foregroundColor(.white)
+                                    Text("\(app.1) • \(app.2)").foregroundColor(.gray).font(.caption)
                                 }
-                                .padding(.vertical, 4)
+                                Spacer()
+                                Button("Get") {
+                                    let item = AppItem(name: app.0, version: app.1, bundleID: "com.\(app.0.lowercased())")
+                                    if !store.downloadedApps.contains(where: { $0.name == item.name }) {
+                                        store.downloadedApps.append(item)
+                                    }
+                                }
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 18).padding(.vertical, 7)
+                                .background(Color.blue.opacity(0.3))
+                                .clipShape(Capsule())
                             }
-                            .listRowBackground(Color.black)
+                            .padding(.vertical, 4)
+                            .listRowBackground(Color(white: 0.08))
                         }
                     }
                 }
@@ -757,132 +685,17 @@ struct AppStoreView: View {
                 .scrollContentBackground(.hidden)
             }
             .navigationTitle("App Store")
-            .searchable(text: $searchText, prompt: "Search apps")
+            .searchable(text: $searchText, prompt: "Search")
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button("Sources") { showSources = true }
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button { showSources = true } label: {
-                        Image(systemName: "plus")
-                    }
+                    Button(action: {}) { Image(systemName: "arrow.clockwise") }
                 }
             }
-            .sheet(isPresented: $showSources) { SourcesView() }
+            .sheet(isPresented: $showSources) { SourcesView().environmentObject(store) }
         }
-    }
-}
-
-struct GetButton: View {
-    @EnvironmentObject var store: AppStore
-    let app: RepoApp
-    @State var state: ButtonState = .idle
-
-    enum ButtonState { case idle, loading, done }
-
-    var body: some View {
-        Button {
-            guard state == .idle else { return }
-            state = .loading
-            DispatchQueue.main.asyncAfter(deadline: .now() + Double.random(in: 1.2...2.5)) {
-                let dl = DownloadItem(name: app.name, size: app.size, url: app.downloadURL)
-                store.addDownload(dl)
-                state = .done
-            }
-        } label: {
-            Group {
-                switch state {
-                case .idle:
-                    Text("Get")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 18).padding(.vertical, 7)
-                        .background(Color.gray.opacity(0.3))
-                        .clipShape(Capsule())
-                case .loading:
-                    ProgressView().tint(.blue)
-                        .frame(width: 52, height: 28)
-                case .done:
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundColor(.green)
-                        .frame(width: 52, height: 28)
-                }
-            }
-        }
-        .buttonStyle(.plain)
-    }
-}
-
-struct RepoAppDetailView: View {
-    @EnvironmentObject var store: AppStore
-    let app: RepoApp
-    @State var downloaded = false
-    @State var downloading = false
-
-    var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
-            ScrollView {
-                VStack(spacing: 24) {
-                    RoundedRectangle(cornerRadius: 22)
-                        .fill(Color.gray.opacity(0.2))
-                        .frame(width: 100, height: 100)
-                        .overlay(Image(systemName: "app").foregroundColor(.gray).font(.system(size: 44)))
-
-                    VStack(spacing: 6) {
-                        Text(app.name).foregroundColor(.white).font(.title2.bold())
-                        Text(app.bundleID).foregroundColor(.gray).font(.subheadline)
-                        Text(app.description).foregroundColor(.blue).font(.caption)
-                    }
-
-                    HStack(spacing: 30) {
-                        VStack {
-                            Text(app.version).foregroundColor(.white).font(.subheadline.bold())
-                            Text("Version").foregroundColor(.gray).font(.caption)
-                        }
-                        Divider().frame(height: 30)
-                        VStack {
-                            Text(app.size).foregroundColor(.white).font(.subheadline.bold())
-                            Text("Size").foregroundColor(.gray).font(.caption)
-                        }
-                    }
-                    .padding()
-                    .background(Color(white: 0.1))
-                    .cornerRadius(14)
-
-                    Button {
-                        guard !downloading && !downloaded else { return }
-                        downloading = true
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                            let dl = DownloadItem(name: app.name, size: app.size, url: app.downloadURL)
-                            store.addDownload(dl)
-                            downloading = false
-                            downloaded = true
-                        }
-                    } label: {
-                        HStack {
-                            if downloading {
-                                ProgressView().tint(.white)
-                            } else {
-                                Image(systemName: downloaded ? "checkmark" : "arrow.down.app")
-                                Text(downloaded ? "Downloaded" : "Download")
-                            }
-                        }
-                        .font(.body.bold())
-                        .foregroundColor(.white)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
-                        .background(downloaded ? Color.green : Color.blue)
-                        .cornerRadius(14)
-                    }
-                    .padding(.horizontal)
-
-                    Spacer()
-                }
-                .padding(.top, 30)
-            }
-        }
-        .navigationTitle(app.name)
     }
 }
 
@@ -890,9 +703,7 @@ struct SourcesView: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) var dismiss
     @State var showAddSource = false
-    @State var newURL = ""
-    @State var newName = ""
-    @State var addError = ""
+    @State var newSourceURL = ""
 
     var body: some View {
         NavigationView {
@@ -902,38 +713,22 @@ struct SourcesView: View {
                     Section(header: HStack {
                         Text("Repositories").foregroundColor(.white).font(.headline).bold()
                         Spacer()
-                        Text("\(store.sources.count)")
-                            .foregroundColor(.white).font(.caption)
+                        Text("\(store.sources.count)").foregroundColor(.white).font(.caption)
                             .padding(6).background(Color.gray.opacity(0.4)).clipShape(Circle())
                     }) {
                         ForEach(store.sources) { src in
                             HStack(spacing: 14) {
-                                RoundedRectangle(cornerRadius: 12).fill(Color.blue.opacity(0.15))
+                                RoundedRectangle(cornerRadius: 10).fill(Color.blue.opacity(0.15))
                                     .frame(width: 44, height: 44)
                                     .overlay(Image(systemName: "globe").foregroundColor(.blue))
                                 VStack(alignment: .leading) {
                                     Text(src.name).foregroundColor(.white)
                                     Text(src.url).foregroundColor(.gray).font(.caption).lineLimit(1)
-                                    if src.appsCount > 0 {
-                                        Text("\(src.appsCount) apps").foregroundColor(.blue).font(.caption2)
-                                    }
-                                }
-                                Spacer()
-                                Button {
-                                    if let url = URL(string: src.url) { UIApplication.shared.open(url) }
-                                } label: {
-                                    Image(systemName: "safari").foregroundColor(.gray)
                                 }
                             }
-                            .listRowBackground(Color.black)
-                            .swipeActions(edge: .trailing) {
-                                Button(role: .destructive) {
-                                    store.removeSource(src)
-                                } label: {
-                                    Label("Delete", systemImage: "trash")
-                                }
-                            }
+                            .listRowBackground(Color(white: 0.1))
                         }
+                        .onDelete { store.sources.remove(atOffsets: $0) }
                     }
                 }
                 .listStyle(.plain)
@@ -945,108 +740,28 @@ struct SourcesView: View {
                     Button("Done") { dismiss() }
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button { showAddSource = true } label: {
-                        Image(systemName: "plus")
-                    }
+                    Button(action: { showAddSource = true }) { Image(systemName: "plus") }
                 }
             }
-            .sheet(isPresented: $showAddSource) {
-                AddSourceSheet(isPresented: $showAddSource)
-            }
-        }
-    }
-}
-
-struct AddSourceSheet: View {
-    @EnvironmentObject var store: AppStore
-    @Binding var isPresented: Bool
-    @State var url = ""
-    @State var name = ""
-    @State var isLoading = false
-    @State var error = ""
-
-    var body: some View {
-        NavigationView {
-            ZStack {
-                Color.black.ignoresSafeArea()
-                VStack(spacing: 20) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Repository Name").foregroundColor(.gray).font(.caption)
-                        TextField("e.g. My IPA Repo", text: $name)
-                            .foregroundColor(.white)
-                            .padding(12)
-                            .background(Color(white: 0.1))
-                            .cornerRadius(10)
+            .alert("Add Source", isPresented: $showAddSource) {
+                TextField("https://...", text: $newSourceURL)
+                Button("Add") {
+                    if !newSourceURL.isEmpty {
+                        store.sources.append(Source(name: newSourceURL, url: newSourceURL))
+                        newSourceURL = ""
                     }
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Repository URL").foregroundColor(.gray).font(.caption)
-                        TextField("https://example.com/apps.json", text: $url)
-                            .foregroundColor(.white)
-                            .autocapitalization(.none)
-                            .keyboardType(.URL)
-                            .padding(12)
-                            .background(Color(white: 0.1))
-                            .cornerRadius(10)
-                    }
-                    if !error.isEmpty {
-                        Text(error).foregroundColor(.red).font(.caption)
-                    }
-                    if isLoading {
-                        ProgressView("Validating URL...").tint(.blue).foregroundColor(.white)
-                    } else {
-                        Button {
-                            addSource()
-                        } label: {
-                            Text("Add Source")
-                                .font(.body.bold())
-                                .foregroundColor(.white)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 14)
-                                .background(url.isEmpty || name.isEmpty ? Color.gray.opacity(0.4) : Color.blue)
-                                .cornerRadius(14)
-                        }
-                        .disabled(url.isEmpty || name.isEmpty)
-                    }
-                    Spacer()
                 }
-                .padding()
+                Button("Cancel", role: .cancel) {}
             }
-            .navigationTitle("Add Source")
-            .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button("Cancel") { isPresented = false }
-                }
-            }
-        }
-    }
-
-    func addSource() {
-        guard !url.isEmpty, !name.isEmpty else { return }
-        guard let _ = URL(string: url), url.hasPrefix("http") else {
-            error = "Invalid URL format. Must start with https://"
-            return
-        }
-        isLoading = true
-        error = ""
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-            store.addSource(Source(name: name, url: url))
-            isLoading = false
-            isPresented = false
         }
     }
 }
 
 // MARK: - Downloads View
-
 struct DownloadsView: View {
     @EnvironmentObject var store: AppStore
-    @State var searchText = ""
-
-    var filtered: [DownloadItem] {
-        searchText.isEmpty ? store.downloads : store.downloads.filter {
-            $0.name.localizedCaseInsensitiveContains(searchText)
-        }
-    }
+    @State var showAddDownload = false
+    @State var downloadURL = ""
 
     var body: some View {
         NavigationView {
@@ -1054,59 +769,37 @@ struct DownloadsView: View {
                 Color.black.ignoresSafeArea()
                 if store.downloads.isEmpty {
                     VStack(spacing: 12) {
-                        Image(systemName: "arrow.down.app")
-                            .font(.system(size: 52))
-                            .foregroundColor(.gray.opacity(0.4))
-                        Text("No Downloads")
-                            .foregroundColor(.gray)
-                        Text("Downloaded apps will appear here")
-                            .foregroundColor(.gray.opacity(0.6))
-                            .font(.caption)
+                        Image(systemName: "arrow.down.circle")
+                            .font(.system(size: 52)).foregroundColor(.gray)
+                        Text("No Downloads").foregroundColor(.gray)
                     }
                 } else {
                     List {
                         Section(header: HStack {
-                            Text("Downloaded")
-                                .foregroundColor(.white).font(.headline).bold()
+                            Text("Downloaded").foregroundColor(.white).font(.headline).bold()
                             Spacer()
-                            Text("\(store.downloads.count)")
-                                .foregroundColor(.white).font(.caption)
+                            Text("\(store.downloads.count)").foregroundColor(.white).font(.caption)
                                 .padding(6).background(Color.gray.opacity(0.4)).clipShape(Circle())
                         }) {
-                            ForEach(filtered) { item in
+                            ForEach(store.downloads) { item in
                                 HStack(spacing: 14) {
                                     Image(systemName: "doc.zipper")
                                         .font(.title2).foregroundColor(.blue)
                                         .frame(width: 44, height: 44)
                                         .background(Color.blue.opacity(0.1)).cornerRadius(10)
                                     VStack(alignment: .leading, spacing: 3) {
-                                        Text(item.name)
-                                            .foregroundColor(.white).font(.body).lineLimit(1)
-                                        Text(item.size)
-                                            .foregroundColor(.gray).font(.caption)
-                                        if let date = item.downloadedDate {
-                                            Text(date, style: .date)
-                                                .foregroundColor(.gray.opacity(0.7)).font(.caption2)
+                                        Text(item.name).foregroundColor(.white).lineLimit(1)
+                                        Text(item.size).foregroundColor(.gray).font(.caption)
+                                        if item.progress < 1.0 {
+                                            ProgressView(value: item.progress)
+                                                .tint(.blue)
                                         }
-                                    }
-                                    Spacer()
-                                    Button {
-                                        importToLibrary(item)
-                                    } label: {
-                                        Image(systemName: "arrow.up.app")
-                                            .foregroundColor(.blue)
                                     }
                                 }
                                 .padding(.vertical, 4)
-                                .swipeActions(edge: .trailing) {
-                                    Button(role: .destructive) {
-                                        store.removeDownload(item)
-                                    } label: {
-                                        Label("Delete", systemImage: "trash")
-                                    }
-                                }
-                                .listRowBackground(Color.black)
+                                .listRowBackground(Color(white: 0.1))
                             }
+                            .onDelete { store.downloads.remove(atOffsets: $0) }
                         }
                     }
                     .listStyle(.plain)
@@ -1114,28 +807,48 @@ struct DownloadsView: View {
                 }
             }
             .navigationTitle("Downloads")
-            .searchable(text: $searchText, prompt: "Search downloads")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(action: { showAddDownload = true }) { Image(systemName: "plus") }
+                }
+            }
+            .alert("Download IPA", isPresented: $showAddDownload) {
+                TextField("https://example.com/app.ipa", text: $downloadURL)
+                Button("Download") { startDownload() }
+                Button("Cancel", role: .cancel) {}
+            }
         }
     }
 
-    func importToLibrary(_ item: DownloadItem) {
-        let app = AppItem(name: item.name, version: "1.0", bundleID: "com.download.\(item.name.lowercased().replacingOccurrences(of: " ", with: "."))")
-        store.addDownloadedApp(app)
+    func startDownload() {
+        guard let url = URL(string: downloadURL), !downloadURL.isEmpty else { return }
+        let name = url.lastPathComponent
+        let item = DownloadItem(name: name, size: "جاري التحميل...", url: url, progress: 0.0)
+        store.downloads.append(item)
+        downloadURL = ""
+
+        URLSession.shared.downloadTask(with: url) { localURL, response, error in
+            DispatchQueue.main.async {
+                if let idx = store.downloads.firstIndex(where: { $0.name == name }) {
+                    if let localURL = localURL {
+                        let bytes = (try? FileManager.default.attributesOfItem(atPath: localURL.path)[.size] as? Int) ?? 0
+                        let mb = Double(bytes) / 1_000_000
+                        store.downloads[idx].size = String(format: "%.1f MB", mb)
+                        store.downloads[idx].progress = 1.0
+                        let appItem = AppItem(name: name, version: "1.0", bundleID: "com.download.\(name)", ipaURL: localURL)
+                        store.downloadedApps.append(appItem)
+                    } else {
+                        store.downloads[idx].size = "فشل التحميل"
+                    }
+                }
+            }
+        }.resume()
     }
 }
 
 // MARK: - Settings View
-
 struct SettingsView: View {
     @EnvironmentObject var store: AppStore
-    @State var showLogs = false
-    @State var showSigningOptions = false
-    @State var showAbout = false
-
-    let telegramURL = "https://t.me/"
-    let githubURL = "https://github.com/ZZZ-NGE"
-    let discordURL = "https://discord.com/"
-    let donateURL = "https://www.buymeacoffee.com/"
 
     var body: some View {
         NavigationView {
@@ -1144,123 +857,243 @@ struct SettingsView: View {
                 List {
                     Section {
                         VStack(spacing: 12) {
-                            Image(systemName: "person.crop.circle.fill")
-                                .font(.system(size: 48)).foregroundColor(.gray)
-                            Text("Donations").font(.title2.bold()).foregroundColor(.white)
-                            HStack(alignment: .top, spacing: 10) {
-                                Image(systemName: "heart.fill").foregroundColor(.blue).font(.title3)
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text("Show Your Support").foregroundColor(.white).font(.subheadline.bold())
-                                    Text("Show your support by donating! If you're unable to donate, spreading the word works too!")
-                                        .foregroundColor(.gray).font(.caption)
-                                }
-                            }
-                            Button {
-                                if let url = URL(string: donateURL) { UIApplication.shared.open(url) }
-                            } label: {
-                                Text("Donate")
-                                    .font(.body.bold()).foregroundColor(.white)
-                                    .frame(maxWidth: .infinity).padding(.vertical, 12)
-                                    .background(Color.blue).cornerRadius(12)
-                            }
+                            Image(systemName: "signature")
+                                .font(.system(size: 44)).foregroundColor(.blue)
+                            Text("MySigner").font(.title2.bold()).foregroundColor(.white)
+                            Text("IPA Signing Tool v1.0")
+                                .foregroundColor(.gray).font(.caption)
                         }
+                        .frame(maxWidth: .infinity)
                         .padding(.vertical, 8)
-                        .listRowBackground(Color(white: 0.12))
-                    }
-
-                    Section {
-                        Button {
-                            showAbout = true
-                        } label: {
-                            SettingsRowContent(icon: "info.circle", iconColor: .blue, title: "About")
-                        }
-                        .listRowBackground(Color(white: 0.12))
-
-                        Button {
-                            if let url = URL(string: telegramURL) { UIApplication.shared.open(url) }
-                        } label: {
-                            SettingsRowContent(icon: "paperplane.fill", iconColor: .blue, title: "Telegram Channel", isBlue: true)
-                        }
-                        .listRowBackground(Color(white: 0.12))
-
-                        Button {
-                            if let url = URL(string: githubURL) { UIApplication.shared.open(url) }
-                        } label: {
-                            SettingsRowContent(icon: "safari.fill", iconColor: .blue, title: "GitHub Repository", isBlue: true)
-                        }
-                        .listRowBackground(Color(white: 0.12))
-
-                        Button {
-                            if let url = URL(string: discordURL) { UIApplication.shared.open(url) }
-                        } label: {
-                            SettingsRowContent(icon: "safari.fill", iconColor: .blue, title: "Discord Server", isBlue: true)
-                        }
-                        .listRowBackground(Color(white: 0.12))
+                        .listRowBackground(Color(white: 0.1))
                     }
 
                     Section(header: Text("Features").foregroundColor(.white).font(.headline).bold()) {
-                        Button { showLogs = true } label: {
-                            SettingsRowContent(icon: "terminal.fill", iconColor: .blue, title: "Logs")
-                        }
-                        .listRowBackground(Color(white: 0.12))
-
-                        NavigationLink(destination: CertificatesView()) {
+                        NavigationLink(destination: CertificatesView().environmentObject(store)) {
                             SettingsRowContent(icon: "signature", iconColor: .blue, title: "Certificates")
-                        }
-                        .listRowBackground(Color(white: 0.12))
+                        }.listRowBackground(Color(white: 0.1))
 
-                        Button { showSigningOptions = true } label: {
+                        NavigationLink(destination: SigningOptionsView()) {
                             SettingsRowContent(icon: "gearshape.fill", iconColor: .blue, title: "Signing Options")
-                        }
-                        .listRowBackground(Color(white: 0.12))
+                        }.listRowBackground(Color(white: 0.1))
+
+                        NavigationLink(destination: LogsView()) {
+                            SettingsRowContent(icon: "terminal.fill", iconColor: .blue, title: "Logs")
+                        }.listRowBackground(Color(white: 0.1))
                     }
-                    .listRowBackground(Color(white: 0.12))
 
                     Section(header: Text("Misc").foregroundColor(.white).font(.headline).bold()) {
-                        Button {
-                            if let url = URL(string: "shareddocuments://") { UIApplication.shared.open(url) }
-                        } label: {
-                            SettingsRowContent(icon: "folder.fill", iconColor: .blue, title: "Open Documents", isBlue: true)
-                        }
-                        .listRowBackground(Color(white: 0.12))
-                    }
-
-                    Section {
-                        Button(role: .destructive) {
-                            resetAll()
-                        } label: {
-                            HStack {
-                                ZStack {
-                                    RoundedRectangle(cornerRadius: 8).fill(Color.red.opacity(0.2)).frame(width: 32, height: 32)
-                                    Image(systemName: "trash.fill").foregroundColor(.red).font(.system(size: 15))
-                                }
-                                Text("Reset All Data").foregroundColor(.red)
-                            }
-                        }
-                        .listRowBackground(Color(white: 0.12))
+                        SettingsRowContent(icon: "info.circle", iconColor: .blue, title: "About MySigner")
+                            .listRowBackground(Color(white: 0.1))
+                        Button(action: {
+                            store.downloadedApps.removeAll()
+                            store.signedApps.removeAll()
+                            store.downloads.removeAll()
+                        }) {
+                            SettingsRowContent(icon: "trash.fill", iconColor: .red, title: "Reset All Data")
+                        }.listRowBackground(Color(white: 0.1))
                     }
                 }
                 .listStyle(.insetGrouped)
                 .scrollContentBackground(.hidden)
             }
             .navigationTitle("Settings")
-            .sheet(isPresented: $showLogs) { LogsView() }
-            .sheet(isPresented: $showSigningOptions) { SigningOptionsView() }
-            .sheet(isPresented: $showAbout) { AboutView() }
         }
     }
+}
 
-    func resetAll() {
-        store.certificates.removeAll()
-        store.downloadedApps.removeAll()
-        store.signedApps.removeAll()
-        store.downloads.removeAll()
-        UserDefaults.standard.removePersistentDomain(forName: Bundle.main.bundleIdentifier ?? "")
+struct SigningOptionsView: View {
+    @State var removePlugins = true
+    @State var forceSign = true
+    @State var removeWatchApps = false
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            List {
+                Section(header: Text("Signing Options").foregroundColor(.white)) {
+                    Toggle("Force Sign", isOn: $forceSign)
+                        .foregroundColor(.white).listRowBackground(Color(white: 0.1))
+                    Toggle("Remove Plugins", isOn: $removePlugins)
+                        .foregroundColor(.white).listRowBackground(Color(white: 0.1))
+                    Toggle("Remove Watch Apps", isOn: $removeWatchApps)
+                        .foregroundColor(.white).listRowBackground(Color(white: 0.1))
+                }
+            }
+            .listStyle(.insetGrouped)
+            .scrollContentBackground(.hidden)
+        }
+        .navigationTitle("Signing Options")
+        .preferredColorScheme(.dark)
+    }
+}
+
+struct LogsView: View {
+    let logs = [
+        "[INFO] MySigner started",
+        "[INFO] Loaded certificates",
+        "[INFO] Ready to sign",
+    ]
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(logs, id: \.self) { log in
+                        Text(log).font(.system(.caption, design: .monospaced)).foregroundColor(.green)
+                    }
+                }
+                .padding()
+            }
+        }
+        .navigationTitle("Logs")
+        .preferredColorScheme(.dark)
+    }
+}
+
+// MARK: - Certificates View
+struct CertificatesView: View {
+    @EnvironmentObject var store: AppStore
+    @State var showAdd = false
+    @State var p12URL: URL?
+    @State var provisionURL: URL?
+    @State var certName = ""
+    @State var pickingType: CertPickType? = nil
+
+    enum CertPickType: Identifiable {
+        case p12, provision
+        var id: Int { self == .p12 ? 0 : 1 }
+    }
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            VStack {
+                if store.certificates.isEmpty {
+                    Spacer()
+                    VStack(spacing: 12) {
+                        Image(systemName: "signature").font(.system(size: 44)).foregroundColor(.gray)
+                        Text("No Certificates").foregroundColor(.gray)
+                        Button("Add Certificate") { showAdd = true }
+                            .foregroundColor(.blue)
+                    }
+                    Spacer()
+                } else {
+                    List {
+                        ForEach(store.certificates) { cert in
+                            CertCard(cert: cert)
+                                .listRowBackground(Color.clear)
+                                .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 6, trailing: 0))
+                        }
+                        .onDelete { store.certificates.remove(atOffsets: $0) }
+                    }
+                    .listStyle(.plain)
+                    .scrollContentBackground(.hidden)
+                }
+            }
+            .padding(.horizontal, store.certificates.isEmpty ? 0 : 16)
+        }
+        .navigationTitle("Certificates")
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button(action: { showAdd = true }) { Image(systemName: "plus") }
+            }
+        }
+        .sheet(isPresented: $showAdd) {
+            NavigationView {
+                ZStack {
+                    Color.black.ignoresSafeArea()
+                    VStack(spacing: 16) {
+                        TextField("Certificate Name", text: $certName)
+                            .padding()
+
+                        FilePickerRow(
+                            icon: "lock.shield.fill", title: "P12 File",
+                            subtitle: p12URL?.lastPathComponent ?? "اختر .p12",
+                            color: .purple, isSelected: p12URL != nil
+                        ) { pickingType = .p12 }
+
+                        FilePickerRow(
+                            icon: "doc.badge.gearshape.fill", title: "Provision Profile",
+                            subtitle: provisionURL?.lastPathComponent ?? "اختر .mobileprovision",
+                            color: .cyan, isSelected: provisionURL != nil
+                        ) { pickingType = .provision }
+
+                        Button("Add") {
+                            let cert = Certificate(
+                                name: certName.isEmpty ? (p12URL?.lastPathComponent ?? "Certificate") : certName,
+                                bundleID: provisionURL?.lastPathComponent ?? "",
+                                daysLeft: 90, isValid: true,
+                                p12URL: p12URL, provisionURL: provisionURL
+                            )
+                            store.certificates.append(cert)
+                            showAdd = false
+                            certName = ""
+                            p12URL = nil
+                            provisionURL = nil
+                        }
+                        .disabled(p12URL == nil || provisionURL == nil)
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity).padding()
+                        .background(p12URL != nil && provisionURL != nil ? Color.blue : Color.gray.opacity(0.4))
+                        .cornerRadius(12)
+                        Spacer()
+                    }
+                    .padding()
+                }
+                .navigationTitle("Add Certificate")
+                .toolbar {
+                    ToolbarItem(placement: .navigationBarLeading) {
+                        Button("Cancel") { showAdd = false }
+                    }
+                }
+                .sheet(item: $pickingType) { type in
+                    DocumentPicker(type: type == .p12 ? .p12 : .provision) { url in
+                        if type == .p12 { p12URL = url } else { provisionURL = url }
+                        pickingType = nil
+                    }
+                }
+            }
+            .preferredColorScheme(.dark)
+        }
+    }
+}
+
+struct CertCard: View {
+    let cert: Certificate
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(cert.name).foregroundColor(.white).font(.body.bold())
+            Text(cert.bundleID).foregroundColor(.gray).font(.caption)
+            HStack(spacing: 12) {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle.fill").foregroundColor(.green)
+                    Text("Valid").foregroundColor(.white).font(.subheadline.bold())
+                }
+                .frame(maxWidth: .infinity).padding(.vertical, 10)
+                .background(Color.green.opacity(0.15)).cornerRadius(10)
+
+                HStack(spacing: 6) {
+                    Image(systemName: "clock.fill").foregroundColor(.yellow)
+                    Text("\(cert.daysLeft) days").foregroundColor(.white).font(.subheadline.bold())
+                }
+                .frame(maxWidth: .infinity).padding(.vertical, 10)
+                .background(Color.yellow.opacity(0.15)).cornerRadius(10)
+            }
+        }
+        .padding(16)
+        .background(Color(white: 0.1))
+        .cornerRadius(14)
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.blue.opacity(0.5), lineWidth: 1.5))
     }
 }
 
 struct SettingsRowContent: View {
-    let icon: String; let iconColor: Color; let title: String; var isBlue: Bool = false
+    let icon: String
+    let iconColor: Color
+    let title: String
+    var isBlue: Bool = false
+
     var body: some View {
         HStack(spacing: 14) {
             ZStack {
@@ -1268,326 +1101,7 @@ struct SettingsRowContent: View {
                 Image(systemName: icon).foregroundColor(iconColor).font(.system(size: 15))
             }
             Text(title).foregroundColor(isBlue ? .blue : .white)
-            Spacer()
         }
-    }
-}
-
-struct LogsView: View {
-    @Environment(\.dismiss) var dismiss
-    let logs = [
-        "[\(Date().formatted(date: .omitted, time: .standard))] App launched",
-        "[\(Date().formatted(date: .omitted, time: .standard))] AppStore initialized",
-        "[\(Date().formatted(date: .omitted, time: .standard))] Sources loaded from storage",
-        "[\(Date().formatted(date: .omitted, time: .standard))] UI ready",
-    ]
-
-    var body: some View {
-        NavigationView {
-            ZStack {
-                Color.black.ignoresSafeArea()
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(logs, id: \.self) { log in
-                            Text(log)
-                                .foregroundColor(.green)
-                                .font(.system(.caption, design: .monospaced))
-                        }
-                    }
-                    .padding()
-                }
-            }
-            .navigationTitle("Logs")
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") { dismiss() }
-                }
-            }
-        }
-    }
-}
-
-struct SigningOptionsView: View {
-    @Environment(\.dismiss) var dismiss
-    @AppStorage("signing_forceOriginalID") var forceOriginalID = false
-    @AppStorage("signing_removeSupportedDevices") var removeSupportedDevices = true
-    @AppStorage("signing_enableFileSharingEnabled") var enableFileSharing = true
-    @AppStorage("signing_removeURLScheme") var removeURLScheme = false
-
-    var body: some View {
-        NavigationView {
-            ZStack {
-                Color.black.ignoresSafeArea()
-                List {
-                    Section(header: Text("Bundle ID").foregroundColor(.gray)) {
-                        Toggle("Force Original Bundle ID", isOn: $forceOriginalID)
-                            .foregroundColor(.white)
-                            .listRowBackground(Color(white: 0.12))
-                    }
-                    Section(header: Text("Entitlements").foregroundColor(.gray)) {
-                        Toggle("Remove Supported Devices", isOn: $removeSupportedDevices)
-                            .foregroundColor(.white)
-                            .listRowBackground(Color(white: 0.12))
-                        Toggle("Enable File Sharing", isOn: $enableFileSharing)
-                            .foregroundColor(.white)
-                            .listRowBackground(Color(white: 0.12))
-                        Toggle("Remove URL Schemes", isOn: $removeURLScheme)
-                            .foregroundColor(.white)
-                            .listRowBackground(Color(white: 0.12))
-                    }
-                }
-                .listStyle(.insetGrouped)
-                .scrollContentBackground(.hidden)
-            }
-            .navigationTitle("Signing Options")
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") { dismiss() }
-                }
-            }
-        }
-    }
-}
-
-struct AboutView: View {
-    @Environment(\.dismiss) var dismiss
-    var body: some View {
-        NavigationView {
-            ZStack {
-                Color.black.ignoresSafeArea()
-                VStack(spacing: 24) {
-                    Image(systemName: "signature")
-                        .font(.system(size: 72))
-                        .foregroundColor(.blue)
-                    Text("MySigner").font(.largeTitle.bold()).foregroundColor(.white)
-                    Text("Version 1.0").foregroundColor(.gray)
-                    Text("A powerful IPA signing tool for iOS.\nSign your apps with your own certificates.")
-                        .foregroundColor(.gray)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal)
-                    Spacer()
-                }
-                .padding(.top, 50)
-            }
-            .navigationTitle("About")
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") { dismiss() }
-                }
-            }
-        }
-    }
-}
-
-// MARK: - Certificates View
-
-struct CertificatesView: View {
-    @EnvironmentObject var store: AppStore
-    @State var showAddCert = false
-
-    var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
-            if store.certificates.isEmpty {
-                VStack(spacing: 16) {
-                    Image(systemName: "signature")
-                        .font(.system(size: 52))
-                        .foregroundColor(.gray.opacity(0.4))
-                    Text("No Certificates").foregroundColor(.gray)
-                    Text("Tap + to add a P12 certificate and\na MobileProvision profile").foregroundColor(.gray.opacity(0.6)).font(.caption).multilineTextAlignment(.center)
-                }
-            } else {
-                ScrollView {
-                    VStack(spacing: 14) {
-                        ForEach(store.certificates) { cert in
-                            CertCard(cert: cert)
-                                .swipeActions {}
-                                .contextMenu {
-                                    Button(role: .destructive) {
-                                        store.removeCertificate(cert)
-                                    } label: {
-                                        Label("Delete", systemImage: "trash")
-                                    }
-                                }
-                        }
-                    }
-                    .padding()
-                }
-            }
-        }
-        .navigationTitle("Certificates")
-        .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button { showAddCert = true } label: {
-                    Image(systemName: "plus")
-                }
-            }
-        }
-        .sheet(isPresented: $showAddCert) {
-            AddCertificateSheet(isPresented: $showAddCert)
-        }
-    }
-}
-
-struct AddCertificateSheet: View {
-    @EnvironmentObject var store: AppStore
-    @Binding var isPresented: Bool
-    @State var certName = ""
-    @State var bundleID = ""
-    @State var expiryDate = Calendar.current.date(byAdding: .day, value: 365, to: Date()) ?? Date()
-    @State var showP12Picker = false
-    @State var showProvisionPicker = false
-    @State var p12Picked = false
-    @State var provisionPicked = false
-    @State var p12Data: Data?
-    @State var provisionData: Data?
-
-    var body: some View {
-        NavigationView {
-            ZStack {
-                Color.black.ignoresSafeArea()
-                ScrollView {
-                    VStack(spacing: 20) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Certificate Name").foregroundColor(.gray).font(.caption)
-                            TextField("e.g. My Developer Certificate", text: $certName)
-                                .foregroundColor(.white)
-                                .padding(12)
-                                .background(Color(white: 0.1))
-                                .cornerRadius(10)
-                        }
-
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Bundle ID").foregroundColor(.gray).font(.caption)
-                            TextField("com.example.app or *", text: $bundleID)
-                                .foregroundColor(.white)
-                                .autocapitalization(.none)
-                                .padding(12)
-                                .background(Color(white: 0.1))
-                                .cornerRadius(10)
-                        }
-
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Expiry Date").foregroundColor(.gray).font(.caption)
-                            DatePicker("", selection: $expiryDate, in: Date()..., displayedComponents: .date)
-                                .labelsHidden()
-                                .colorScheme(.dark)
-                        }
-
-                        Button {
-                            showP12Picker = true
-                        } label: {
-                            HStack {
-                                Image(systemName: p12Picked ? "checkmark.circle.fill" : "lock.fill")
-                                    .foregroundColor(p12Picked ? .green : .orange)
-                                Text(p12Picked ? "P12 File Selected ✓" : "Select P12 File")
-                                    .foregroundColor(p12Picked ? .green : .white)
-                                Spacer()
-                                Image(systemName: "chevron.right").foregroundColor(.gray).font(.caption)
-                            }
-                            .padding(14)
-                            .background(Color(white: 0.1))
-                            .cornerRadius(10)
-                        }
-
-                        Button {
-                            showProvisionPicker = true
-                        } label: {
-                            HStack {
-                                Image(systemName: provisionPicked ? "checkmark.circle.fill" : "doc.badge.gearshape.fill")
-                                    .foregroundColor(provisionPicked ? .green : .blue)
-                                Text(provisionPicked ? "Provision Selected ✓" : "Select MobileProvision")
-                                    .foregroundColor(provisionPicked ? .green : .white)
-                                Spacer()
-                                Image(systemName: "chevron.right").foregroundColor(.gray).font(.caption)
-                            }
-                            .padding(14)
-                            .background(Color(white: 0.1))
-                            .cornerRadius(10)
-                        }
-
-                        Button {
-                            addCertificate()
-                        } label: {
-                            Text("Add Certificate")
-                                .font(.body.bold())
-                                .foregroundColor(.white)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 14)
-                                .background(canAdd ? Color.blue : Color.gray.opacity(0.4))
-                                .cornerRadius(14)
-                        }
-                        .disabled(!canAdd)
-                    }
-                    .padding()
-                }
-            }
-            .navigationTitle("Add Certificate")
-            .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button("Cancel") { isPresented = false }
-                }
-            }
-            .sheet(isPresented: $showP12Picker) {
-                DocumentPickerView(allowedTypes: [.init(filenameExtension: "p12")!]) { urls in
-                    if let url = urls.first, let data = try? Data(contentsOf: url) {
-                        p12Data = data
-                        p12Picked = true
-                    }
-                }
-            }
-            .sheet(isPresented: $showProvisionPicker) {
-                DocumentPickerView(allowedTypes: [.init(filenameExtension: "mobileprovision")!]) { urls in
-                    if let url = urls.first, let data = try? Data(contentsOf: url) {
-                        provisionData = data
-                        provisionPicked = true
-                    }
-                }
-            }
-        }
-    }
-
-    var canAdd: Bool { !certName.isEmpty && !bundleID.isEmpty && p12Picked && provisionPicked }
-
-    func addCertificate() {
-        let cert = Certificate(name: certName, bundleID: bundleID, expiryDate: expiryDate, p12Data: p12Data, provisionData: provisionData)
-        store.addCertificate(cert)
-        isPresented = false
-    }
-}
-
-struct CertCard: View {
-    @EnvironmentObject var store: AppStore
-    let cert: Certificate
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(cert.name).foregroundColor(.white).font(.body.bold())
-            Text(cert.bundleID).foregroundColor(.gray).font(.caption)
-            HStack(spacing: 12) {
-                HStack(spacing: 6) {
-                    Image(systemName: cert.isValid ? "checkmark.circle.fill" : "xmark.circle.fill")
-                        .foregroundColor(cert.isValid ? .green : .red)
-                    Text(cert.isValid ? "Valid" : "Expired")
-                        .foregroundColor(.white).font(.subheadline.bold())
-                }
-                .frame(maxWidth: .infinity).padding(.vertical, 10)
-                .background((cert.isValid ? Color.green : Color.red).opacity(0.15)).cornerRadius(10)
-
-                HStack(spacing: 6) {
-                    Image(systemName: "clock.fill")
-                        .foregroundColor(cert.daysLeft > 30 ? .yellow : .red)
-                    Text(cert.daysLeft > 0 ? "\(cert.daysLeft) days" : "Expired")
-                        .foregroundColor(.white).font(.subheadline.bold())
-                }
-                .frame(maxWidth: .infinity).padding(.vertical, 10)
-                .background((cert.daysLeft > 30 ? Color.yellow : Color.red).opacity(0.15)).cornerRadius(10)
-            }
-        }
-        .padding(16)
-        .background(Color(white: 0.1))
-        .cornerRadius(14)
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(cert.isValid ? Color.blue.opacity(0.6) : Color.red.opacity(0.4), lineWidth: 1.5))
     }
 }
 
