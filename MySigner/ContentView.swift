@@ -4,19 +4,6 @@ import Network
 import Foundation
 
 // MARK: - Models
-struct Certificate: Identifiable, Codable, Equatable {
-    var id = UUID()
-    var name: String
-    var teamID: String
-    var expiryDate: Date
-    var p12Path: String
-    var mobileProvisionPath: String?
-    var daysLeft: Int {
-        Calendar.current.dateComponents([.day], from: Date(), to: expiryDate).day ?? 0
-    }
-    var isValid: Bool { daysLeft > 0 }
-}
-
 struct AppItem: Identifiable, Codable, Equatable {
     var id = UUID()
     var name: String
@@ -42,9 +29,8 @@ struct Source: Identifiable, Codable {
     var url: String
 }
 
-// MARK: - App Store Manager
+// MARK: - App Store Manager (عقلي حقيقي)
 class AppStore: ObservableObject {
-    @Published var certificates: [Certificate] = []
     @Published var apps: [AppItem] = []
     @Published var downloads: [DownloadItem] = []
     @Published var sources: [Source] = []
@@ -60,12 +46,6 @@ class AppStore: ObservableObject {
     let appsDir: URL = {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let dir = docs.appendingPathComponent("MySignerApps")
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir
-    }()
-    let downloadsDir: URL = {
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let dir = docs.appendingPathComponent("MySignerDownloads")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }()
@@ -89,14 +69,12 @@ class AppStore: ObservableObject {
     }
 
     func loadAll() {
-        certificates = load(Certificate.self, from: "certificates.json")
         apps = load(AppItem.self, from: "apps.json")
         downloads = load(DownloadItem.self, from: "downloads.json")
         sources = load(Source.self, from: "sources.json")
     }
 
     func saveAll() {
-        save(certificates, to: "certificates.json")
         save(apps, to: "apps.json")
         save(downloads, to: "downloads.json")
         save(sources, to: "sources.json")
@@ -129,7 +107,7 @@ class AppStore: ObservableObject {
         }.resume()
     }
 
-    // MARK: - Download with progress
+    // MARK: - Download IPA
     func download(app: AppItem) {
         guard let url = URL(string: app.ipaURL) else { return }
         let item = DownloadItem(name: app.name, ipaURL: app.ipaURL)
@@ -193,19 +171,56 @@ class AppStore: ObservableObject {
 
         let urlString = "itms-services://?action=download-manifest&url=http://localhost:\(server.port)/manifest.plist"
         if let url = URL(string: urlString) {
-            UIApplication.shared.open(url) { success in
-                if success {
-                    if let idx = self.apps.firstIndex(where: { $0.id == app.id }) {
-                        self.apps[idx].isInstalled = true
-                        self.saveAll()
-                    }
+            UIApplication.shared.open(url)
+        }
+    }
+
+    // MARK: - Remote Signing Trigger
+    func triggerRemoteSign(app: AppItem, p12Base64: String, provisionBase64: String, password: String, completion: @escaping (Bool, String) -> Void) {
+        let token = UserDefaults.standard.string(forKey: "gh_token") ?? ""
+        let owner = UserDefaults.standard.string(forKey: "repo_owner") ?? ""
+        let repo = UserDefaults.standard.string(forKey: "repo_name") ?? ""
+
+        guard !token.isEmpty, !owner.isEmpty, !repo.isEmpty,
+              let url = URL(string: "https://api.github.com/repos/\(owner)/\(repo)/actions/workflows/sign_remote.yml/dispatches") else {
+            completion(false, "GitHub configuration missing")
+            return
+        }
+
+        let body: [String: Any] = [
+            "ref": "main",
+            "inputs": [
+                "ipa_url": app.ipaURL,
+                "p12_base64": p12Base64,
+                "mobileprovision_base64": provisionBase64,
+                "password": password,
+                "app_name": app.name
+            ]
+        ]
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            DispatchQueue.main.async {
+                if let error = error {
+                    completion(false, error.localizedDescription)
+                    return
+                }
+                if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 204 {
+                    completion(true, "Signing started. Check your repo artifacts.")
+                } else {
+                    completion(false, "Failed to trigger workflow. Status: \((response as? HTTPURLResponse)?.statusCode ?? 0)")
                 }
             }
-        }
+        }.resume()
     }
 }
 
-// MARK: - Local HTTP Server (using Network framework)
+// MARK: - Local HTTP Server (حقيقي)
 class LocalHTTPServer {
     private var listener: NWListener?
     let port: UInt16 = 8080
@@ -219,28 +234,16 @@ class LocalHTTPServer {
         listener = try? NWListener(using: params, on: .init(integerLiteral: port))
         listener?.stateUpdateHandler = { state in
             switch state {
-            case .ready:
-                self.isRunning = true
-            case .failed(let error):
-                print("Server error: \(error)")
-                self.isRunning = false
-            case .cancelled:
-                self.isRunning = false
-            default:
-                break
+            case .ready: self.isRunning = true
+            case .failed, .cancelled: self.isRunning = false
+            default: break
             }
         }
         listener?.newConnectionHandler = { [weak self] connection in
-            guard let self = self else { return }
             connection.start(queue: .main)
-            self.receive(on: connection)
+            self?.receive(on: connection)
         }
         listener?.start(queue: .main)
-    }
-
-    func stop() {
-        listener?.cancel()
-        isRunning = false
     }
 
     private func receive(on connection: NWConnection) {
@@ -276,12 +279,8 @@ class LocalHTTPServer {
         } else if path.hasPrefix("/ipa/") {
             if let ipaPath = ipaFilePath, let ipaData = try? Data(contentsOf: URL(fileURLWithPath: ipaPath)) {
                 respond(ipaData, "application/octet-stream")
-            } else {
-                connection.cancel()
-            }
+            } else { connection.cancel() }
         } else {
-            let notFound = "HTTP/1.1 404 Not Found\r\n\r\n".data(using: .utf8)!
-            connection.send(content: notFound, completion: .idempotent)
             connection.cancel()
         }
     }
@@ -302,17 +301,21 @@ struct ContentView: View {
                 .tabItem { Label("Library", systemImage: "square.grid.2x2.fill") }
                 .tag(1)
 
-            StoreFrontView()
+            AppStoreView()
                 .tabItem { Label("App Store", systemImage: "plus.app.fill") }
                 .tag(2)
 
+            SignView()
+                .tabItem { Label("Sign", systemImage: "signature") }
+                .tag(3)
+
             DownloadsView()
                 .tabItem { Label("Downloads", systemImage: "arrow.down.app.fill") }
-                .tag(3)
+                .tag(4)
 
             SettingsView()
                 .tabItem { Label("Settings", systemImage: "gearshape.2.fill") }
-                .tag(4)
+                .tag(5)
         }
         .accentColor(.blue)
         .preferredColorScheme(.dark)
@@ -320,10 +323,9 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Files View
+// MARK: - Files View (مبسطة)
 struct FilesView: View {
     @EnvironmentObject var store: AppStore
-
     var body: some View {
         NavigationView {
             ZStack {
@@ -338,38 +340,18 @@ struct FilesView: View {
                             }
                         }
                     }.listRowBackground(Color.black)
-
-                    NavigationLink(destination: Text("Downloads folder: \(store.downloadsDir.path)").foregroundColor(.white)) {
-                        HStack(spacing: 14) {
-                            Image(systemName: "folder.fill").foregroundColor(.blue).font(.title2)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Downloads").foregroundColor(.white)
-                                Text(store.downloadsDir.lastPathComponent).foregroundColor(.gray).font(.caption)
-                            }
-                        }
-                    }.listRowBackground(Color.black)
                 }
-                .listStyle(.plain)
-                .scrollContentBackground(.hidden)
-            }
-            .navigationTitle("Documents")
-            .toolbar {
-                ToolbarItemGroup(placement: .navigationBarTrailing) {
-                    Button {} label: { Image(systemName: "plus") }
-                    Button {} label: { Image(systemName: "pencil") }
-                }
+                .navigationTitle("Documents")
             }
         }
     }
 }
 
-// MARK: - Library View
+// MARK: - Library View (تطبيقات محملة/مثبتة)
 struct LibraryView: View {
     @EnvironmentObject var store: AppStore
     @State private var tab = 0
-
     var downloadedApps: [AppItem] { store.apps.filter { $0.isDownloaded } }
-    var installedApps: [AppItem] { store.apps.filter { $0.isInstalled } }
 
     var body: some View {
         NavigationView {
@@ -387,64 +369,50 @@ struct LibraryView: View {
                     if tab == 0 {
                         AppListView(apps: downloadedApps)
                     } else {
-                        if installedApps.isEmpty {
-                            Text("No installed apps").foregroundColor(.gray)
-                        } else {
-                            AppListView(apps: installedApps, showInstall: false)
-                        }
+                        Text("No installed apps").foregroundColor(.gray)
                     }
                 }
             }
             .navigationTitle("Library")
-            .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) { Button("Edit") {} }
-                ToolbarItem(placement: .navigationBarTrailing) { Button {} label: { Image(systemName: "plus") } }
-            }
         }
     }
 }
 
 struct AppListView: View {
     let apps: [AppItem]
-    var showInstall: Bool = true
     @EnvironmentObject var store: AppStore
 
     var body: some View {
-        List {
-            ForEach(apps) { app in
-                HStack(spacing: 14) {
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(Color.gray.opacity(0.3))
-                        .frame(width: 52, height: 52)
-                        .overlay(Image(systemName: "app.fill").foregroundColor(.gray).font(.title2))
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(app.name).foregroundColor(.white).font(.body)
-                        Text("\(app.version) • \(app.bundleID)").foregroundColor(.gray).font(.caption)
-                    }
-                    Spacer()
-                    if showInstall && !app.isInstalled {
-                        Button("Install") {
-                            store.install(app: app)
-                        }
-                        .font(.caption.bold())
-                        .foregroundColor(.white)
+        List(apps) { app in
+            HStack(spacing: 14) {
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color.gray.opacity(0.3))
+                    .frame(width: 52, height: 52)
+                    .overlay(Image(systemName: "app.fill").foregroundColor(.gray).font(.title2))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(app.name).foregroundColor(.white).font(.body)
+                    Text("\(app.version) • \(app.bundleID)").foregroundColor(.gray).font(.caption)
+                }
+                Spacer()
+                if !app.isInstalled {
+                    Button("Install") { store.install(app: app) }
+                        .font(.caption.bold()).foregroundColor(.white)
                         .padding(.horizontal, 16).padding(.vertical, 6)
                         .background(Color.blue).clipShape(Capsule())
-                    } else if app.isInstalled {
-                        Image(systemName: "checkmark.circle.fill").foregroundColor(.green)
-                    }
+                } else {
+                    Image(systemName: "checkmark.circle.fill").foregroundColor(.green)
                 }
-                .padding(.vertical, 4)
-                .listRowBackground(Color.black)
             }
+            .padding(.vertical, 4)
+            .listRowBackground(Color.black)
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
     }
 }
 
-// MARK: - App Store (StoreFrontView)
-struct StoreFrontView: View {
+// MARK: - App Store View (متجر من المصادر)
+struct AppStoreView: View {
     @EnvironmentObject var store: AppStore
     @State private var showSources = false
     @State private var searchText = ""
@@ -492,13 +460,10 @@ struct StoreFrontView: View {
                 .scrollContentBackground(.hidden)
             }
             .navigationTitle("App Store")
-            .searchable(text: $searchText, prompt: "Search")
+            .searchable(text: $searchText)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button("Sources") { showSources = true }
-                }
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button { } label: { Image(systemName: "plus") }
                 }
             }
             .sheet(isPresented: $showSources) {
@@ -508,7 +473,7 @@ struct StoreFrontView: View {
     }
 }
 
-// MARK: - Sources View
+// MARK: - Sources View (إدارة المصادر)
 struct SourcesView: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) var dismiss
@@ -519,26 +484,22 @@ struct SourcesView: View {
             ZStack {
                 Color.black.ignoresSafeArea()
                 List {
-                    Section(header: Text("Repositories").foregroundColor(.white)) {
-                        ForEach(store.sources) { source in
-                            HStack(spacing: 14) {
-                                Image(systemName: "globe").foregroundColor(.gray)
-                                VStack(alignment: .leading) {
-                                    Text(source.name).foregroundColor(.white)
-                                    Text(source.url).foregroundColor(.gray).font(.caption).lineLimit(1)
-                                }
-                                Spacer()
-                                Button("Fetch") {
-                                    store.fetch(source: source) { _ in }
-                                }
+                    ForEach(store.sources) { source in
+                        HStack(spacing: 14) {
+                            Image(systemName: "globe").foregroundColor(.gray)
+                            VStack(alignment: .leading) {
+                                Text(source.name).foregroundColor(.white)
+                                Text(source.url).foregroundColor(.gray).font(.caption).lineLimit(1)
+                            }
+                            Spacer()
+                            Button("Fetch") { store.fetch(source: source) { _ in } }
                                 .font(.caption.bold()).foregroundColor(.white)
                                 .padding(.horizontal, 12).padding(.vertical, 4)
                                 .background(Color.blue).clipShape(Capsule())
-                            }
-                            .listRowBackground(Color.black)
                         }
-                        .onDelete { idx in store.sources.remove(atOffsets: idx); store.saveAll() }
+                        .listRowBackground(Color.black)
                     }
+                    .onDelete { store.sources.remove(atOffsets: $0); store.saveAll() }
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
@@ -572,7 +533,8 @@ struct AddSourceView: View {
                 TextField("URL (apps.json)", text: $url)
                     .keyboardType(.URL)
                 Button("Add") {
-                    store.sources.append(Source(name: name, url: url))
+                    let source = Source(name: name, url: url)
+                    store.sources.append(source)
                     store.saveAll()
                     dismiss()
                 }
@@ -580,18 +542,64 @@ struct AddSourceView: View {
             }
             .navigationTitle("Add Source")
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
             }
         }
     }
 }
 
-// MARK: - Downloads View
+// MARK: - Sign View (توقيع عن بعد)
+struct SignView: View {
+    @EnvironmentObject var store: AppStore
+    @State private var selectedApp: AppItem?
+    @State private var p12Base64 = ""
+    @State private var provBase64 = ""
+    @State private var password = ""
+    @State private var status = ""
+
+    var body: some View {
+        NavigationView {
+            ZStack {
+                Color.black.ignoresSafeArea()
+                VStack(spacing: 20) {
+                    Picker("App", selection: $selectedApp) {
+                        Text("Select an app").tag(nil as AppItem?)
+                        ForEach(store.apps) { app in
+                            Text(app.name).tag(app as AppItem?)
+                        }
+                    }
+                    .pickerStyle(.wheel)
+                    .foregroundColor(.white)
+
+                    TextField("P12 Base64", text: $p12Base64)
+                        .textFieldStyle(.roundedBorder)
+                    TextField("Mobileprovision Base64", text: $provBase64)
+                        .textFieldStyle(.roundedBorder)
+                    SecureField("Password", text: $password)
+                        .textFieldStyle(.roundedBorder)
+
+                    Button("Sign & Install") {
+                        guard let app = selectedApp else { return }
+                        store.triggerRemoteSign(app: app, p12Base64: p12Base64, provisionBase64: provBase64, password: password) { success, msg in
+                            status = msg
+                        }
+                    }
+                    .font(.body.bold()).foregroundColor(.white)
+                    .padding().background(Color.blue).cornerRadius(12)
+
+                    Text(status).foregroundColor(.gray)
+                    Spacer()
+                }
+                .padding()
+            }
+            .navigationTitle("Sign IPA")
+        }
+    }
+}
+
+// MARK: - Downloads View (تنزيلات نشطة)
 struct DownloadsView: View {
     @EnvironmentObject var store: AppStore
-
     var body: some View {
         NavigationView {
             ZStack {
@@ -599,26 +607,17 @@ struct DownloadsView: View {
                 if store.downloads.isEmpty {
                     Text("No active downloads").foregroundColor(.gray)
                 } else {
-                    List {
-                        ForEach(store.downloads) { item in
-                            HStack(spacing: 14) {
-                                Image(systemName: "doc.zipper").foregroundColor(.blue).font(.title2)
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(item.name).foregroundColor(.white)
-                                    HStack {
-                                        ProgressView(value: item.progress)
-                                            .frame(width: 100)
-                                        Text("\(Int(item.progress * 100))%")
-                                            .foregroundColor(.gray).font(.caption)
-                                    }
-                                }
+                    List(store.downloads) { item in
+                        HStack(spacing: 14) {
+                            Image(systemName: "doc.zipper").foregroundColor(.blue)
+                            VStack(alignment: .leading) {
+                                Text(item.name).foregroundColor(.white)
+                                ProgressView(value: item.progress)
+                                    .frame(width: 120)
                             }
-                            .padding(.vertical, 6)
-                            .listRowBackground(Color.black)
                         }
+                        .listRowBackground(Color.black)
                     }
-                    .listStyle(.plain)
-                    .scrollContentBackground(.hidden)
                 }
             }
             .navigationTitle("Downloads")
@@ -626,127 +625,26 @@ struct DownloadsView: View {
     }
 }
 
-// MARK: - Settings View
+// MARK: - Settings View (GitHub config)
 struct SettingsView: View {
-    @EnvironmentObject var store: AppStore
-    @State private var showCertificates = false
+    @AppStorage("gh_token") private var token = ""
+    @AppStorage("repo_owner") private var owner = ""
+    @AppStorage("repo_name") private var repo = ""
 
     var body: some View {
         NavigationView {
             ZStack {
                 Color.black.ignoresSafeArea()
-                List {
-                    Section {
-                        NavigationLink(destination: CertificatesView()) {
-                            Label("Certificates", systemImage: "signature")
-                        }
+                Form {
+                    Section(header: Text("GitHub Remote Sign Config").foregroundColor(.white)) {
+                        TextField("Personal Access Token", text: $token)
+                        TextField("Owner (username)", text: $owner)
+                        TextField("Repo name", text: $repo)
                     }
-                    .listRowBackground(Color(white: 0.12))
-
-                    Section(header: Text("About").foregroundColor(.white)) {
-                        NavigationLink(destination: Text("MySigner v1.0").foregroundColor(.white)) {
-                            Label("About", systemImage: "info.circle")
-                        }
-                        Button { } label: {
-                            Label("Telegram Channel", systemImage: "paperplane.fill").foregroundColor(.white)
-                        }
-                    }
-                    .listRowBackground(Color(white: 0.12))
-
-                    Section {
-                        Button(role: .destructive) {
-                            store.certificates.removeAll()
-                            store.apps.removeAll()
-                            store.sources.removeAll()
-                            store.downloads.removeAll()
-                            store.saveAll()
-                        } label: {
-                            Label("Reset All Data", systemImage: "trash")
-                        }
-                    }
-                    .listRowBackground(Color(white: 0.12))
                 }
-                .listStyle(.insetGrouped)
                 .scrollContentBackground(.hidden)
             }
             .navigationTitle("Settings")
-        }
-    }
-}
-
-// MARK: - Certificates View
-struct CertificatesView: View {
-    @EnvironmentObject var store: AppStore
-    @State private var showImporter = false
-
-    var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
-            if store.certificates.isEmpty {
-                Text("No certificates imported").foregroundColor(.gray)
-            } else {
-                List {
-                    ForEach(store.certificates) { cert in
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text(cert.name).foregroundColor(.white).bold()
-                            Text("Team: \(cert.teamID)").foregroundColor(.gray)
-                            HStack {
-                                Label("Valid", systemImage: "checkmark.circle.fill").foregroundColor(.green)
-                                Spacer()
-                                Text("\(cert.daysLeft) days").foregroundColor(.yellow)
-                            }
-                        }
-                        .padding()
-                        .background(Color(white: 0.15))
-                        .cornerRadius(12)
-                        .listRowBackground(Color.black)
-                    }
-                    .onDelete { idx in store.certificates.remove(atOffsets: idx); store.saveAll() }
-                }
-                .listStyle(.plain)
-            }
-        }
-        .navigationTitle("Certificates")
-        .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button { showImporter = true } label: { Image(systemName: "plus") }
-            }
-        }
-        .sheet(isPresented: $showImporter) {
-            CertificateImporter()
-        }
-    }
-}
-
-struct CertificateImporter: View {
-    @EnvironmentObject var store: AppStore
-    @Environment(\.dismiss) var dismiss
-    @State private var p12Data: Data?
-    @State private var provisionData: Data?
-    @State private var password = ""
-
-    var body: some View {
-        NavigationView {
-            Form {
-                Section {
-                    Button("Select .p12") { }
-                    Button("Select .mobileprovision") { }
-                    SecureField("Password", text: $password)
-                }
-                Button("Import") {
-                    if p12Data != nil {
-                        let cert = Certificate(name: "Imported", teamID: "", expiryDate: Date().addingTimeInterval(3600*24*30), p12Path: "", mobileProvisionPath: nil)
-                        store.certificates.append(cert)
-                        store.saveAll()
-                        dismiss()
-                    }
-                }
-                .disabled(p12Data == nil)
-            }
-            .navigationTitle("Import Certificate")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-            }
         }
     }
 }
