@@ -29,7 +29,7 @@ struct Source: Identifiable, Codable {
     var url: String
 }
 
-// MARK: - App Store Manager (حقيقي كامل)
+// MARK: - App Store Manager
 class AppStore: ObservableObject {
     @Published var apps: [AppItem] = []
     @Published var downloads: [DownloadItem] = []
@@ -81,7 +81,7 @@ class AppStore: ObservableObject {
     }
 
     // MARK: - Fetch Source
-    func fetch(source: Source, completion: @escaping (Result<[AppItem], Error>) -> Void) {
+    func fetch(source: Source, completion: @escaping (Result<Int, Error>) -> Void) {
         guard let url = URL(string: source.url) else {
             completion(.failure(URLError(.badURL)))
             return
@@ -89,17 +89,14 @@ class AppStore: ObservableObject {
         URLSession.shared.dataTask(with: url) { data, _, error in
             DispatchQueue.main.async {
                 if let error = error { completion(.failure(error)); return }
-                guard let data = data else {
-                    completion(.failure(URLError(.cannotParseResponse)))
-                    return
-                }
+                guard let data = data else { completion(.failure(URLError(.cannotParseResponse))); return }
                 do {
                     var fetched = try JSONDecoder().decode([AppItem].self, from: data)
                     let existingIDs = Set(self.apps.map { $0.bundleID })
                     fetched = fetched.filter { !existingIDs.contains($0.bundleID) }
                     self.apps.append(contentsOf: fetched)
                     self.saveAll()
-                    completion(.success(fetched))
+                    completion(.success(fetched.count))
                 } catch {
                     completion(.failure(error))
                 }
@@ -175,22 +172,33 @@ class AppStore: ObservableObject {
         }
     }
 
+    // MARK: - Import IPA from file
+    func importIPA(from url: URL) {
+        let dest = appsDir.appendingPathComponent(url.lastPathComponent)
+        try? FileManager.default.copyItem(at: url, to: dest)
+        // Try to get info from the IPA (optional, set placeholders)
+        let name = url.deletingPathExtension().lastPathComponent
+        let newApp = AppItem(name: name, version: "1.0", bundleID: "imported.\(UUID().uuidString.prefix(8))", ipaURL: "", localPath: dest.path, isDownloaded: true)
+        apps.append(newApp)
+        saveAll()
+    }
+
     // MARK: - Remote Signing Trigger
     func triggerRemoteSign(app: AppItem, p12Base64: String, provisionBase64: String, password: String, completion: @escaping (Bool, String) -> Void) {
+        // Use Al-Zng/MySigner as default
         let token = UserDefaults.standard.string(forKey: "gh_token") ?? ""
-        let owner = UserDefaults.standard.string(forKey: "repo_owner") ?? ""
-        let repo = UserDefaults.standard.string(forKey: "repo_name") ?? ""
-
+        let owner = "Al-Zng"
+        let repo = "MySigner"
         guard !token.isEmpty, !owner.isEmpty, !repo.isEmpty,
               let url = URL(string: "https://api.github.com/repos/\(owner)/\(repo)/actions/workflows/sign_remote.yml/dispatches") else {
-            completion(false, "GitHub configuration missing")
+            completion(false, "GitHub Token missing")
             return
         }
 
         let body: [String: Any] = [
             "ref": "main",
             "inputs": [
-                "ipa_url": app.ipaURL,
+                "ipa_url": app.ipaURL.isEmpty ? "file://\(app.localPath ?? "")" : app.ipaURL,
                 "p12_base64": p12Base64,
                 "mobileprovision_base64": provisionBase64,
                 "password": password,
@@ -213,14 +221,14 @@ class AppStore: ObservableObject {
                 if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 204 {
                     completion(true, "Signing started. Check your repo artifacts.")
                 } else {
-                    completion(false, "Failed to trigger workflow. Status: \((response as? HTTPURLResponse)?.statusCode ?? 0)")
+                    completion(false, "Status: \((response as? HTTPURLResponse)?.statusCode ?? 0)")
                 }
             }
         }.resume()
     }
 }
 
-// MARK: - Local HTTP Server (حقيقي)
+// MARK: - Local HTTP Server
 class LocalHTTPServer {
     private var listener: NWListener?
     let port: UInt16 = 8080
@@ -286,6 +294,33 @@ class LocalHTTPServer {
     }
 }
 
+// MARK: - Document Picker helper
+struct DocumentPicker: UIViewControllerRepresentable {
+    var types: [UTType]
+    var onPick: (URL) -> Void
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: types)
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onPick: onPick)
+    }
+
+    class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let onPick: (URL) -> Void
+        init(onPick: @escaping (URL) -> Void) { self.onPick = onPick }
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            guard let url = urls.first else { return }
+            onPick(url)
+        }
+    }
+}
+
 // MARK: - Main ContentView
 struct ContentView: View {
     @StateObject private var store = AppStore()
@@ -323,25 +358,45 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Files View
+// MARK: - Files View (with IPA import)
 struct FilesView: View {
     @EnvironmentObject var store: AppStore
+    @State private var showIPAImporter = false
+
     var body: some View {
         NavigationView {
             ZStack {
                 Color.black.ignoresSafeArea()
-                List {
-                    NavigationLink(destination: Text("Apps folder: \(store.appsDir.path)").foregroundColor(.white)) {
-                        HStack(spacing: 14) {
-                            Image(systemName: "folder.fill").foregroundColor(.blue).font(.title2)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Apps").foregroundColor(.white)
-                                Text(store.appsDir.lastPathComponent).foregroundColor(.gray).font(.caption)
+                VStack {
+                    List {
+                        NavigationLink(destination: Text("Apps folder: \(store.appsDir.path)").foregroundColor(.white)) {
+                            HStack(spacing: 14) {
+                                Image(systemName: "folder.fill").foregroundColor(.blue).font(.title2)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Apps").foregroundColor(.white)
+                                    Text(store.appsDir.lastPathComponent).foregroundColor(.gray).font(.caption)
+                                }
                             }
-                        }
-                    }.listRowBackground(Color.black)
+                        }.listRowBackground(Color.black)
+                    }
+                    .listStyle(.plain)
+                    .scrollContentBackground(.hidden)
+                    
+                    Button(action: { showIPAImporter = true }) {
+                        Label("Import IPA File", systemImage: "doc.badge.plus")
+                            .font(.body.bold()).foregroundColor(.white)
+                            .padding()
+                            .background(Color.blue)
+                            .cornerRadius(12)
+                    }
+                    .padding(.bottom, 20)
                 }
-                .navigationTitle("Documents")
+            }
+            .navigationTitle("Documents")
+            .sheet(isPresented: $showIPAImporter) {
+                DocumentPicker(types: [UTType(filenameExtension: "ipa")!]) { url in
+                    store.importIPA(from: url)
+                }
             }
         }
     }
@@ -411,11 +466,12 @@ struct AppListView: View {
     }
 }
 
-// MARK: - App Store View
+// MARK: - App Store View (مع Fetch وتحسينات)
 struct AppStoreView: View {
     @EnvironmentObject var store: AppStore
     @State private var showSources = false
     @State private var searchText = ""
+    @State private var importIPA = false
 
     var filteredApps: [AppItem] {
         if searchText.isEmpty { return store.apps }
@@ -465,19 +521,29 @@ struct AppStoreView: View {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button("Sources") { showSources = true }
                 }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button { importIPA = true } label: { Image(systemName: "plus") }
+                }
             }
             .sheet(isPresented: $showSources) {
                 SourcesView()
+            }
+            .sheet(isPresented: $importIPA) {
+                DocumentPicker(types: [UTType(filenameExtension: "ipa")!]) { url in
+                    store.importIPA(from: url)
+                }
             }
         }
     }
 }
 
-// MARK: - Sources View
+// MARK: - Sources View (مع alerts)
 struct SourcesView: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) var dismiss
     @State private var showAddSource = false
+    @State private var alertMessage = ""
+    @State private var showAlert = false
 
     var body: some View {
         NavigationView {
@@ -492,10 +558,20 @@ struct SourcesView: View {
                                 Text(source.url).foregroundColor(.gray).font(.caption).lineLimit(1)
                             }
                             Spacer()
-                            Button("Fetch") { store.fetch(source: source) { _ in } }
-                                .font(.caption.bold()).foregroundColor(.white)
-                                .padding(.horizontal, 12).padding(.vertical, 4)
-                                .background(Color.blue).clipShape(Capsule())
+                            Button("Fetch") {
+                                store.fetch(source: source) { result in
+                                    switch result {
+                                    case .success(let count):
+                                        alertMessage = "Added \(count) apps."
+                                    case .failure(let error):
+                                        alertMessage = error.localizedDescription
+                                    }
+                                    showAlert = true
+                                }
+                            }
+                            .font(.caption.bold()).foregroundColor(.white)
+                            .padding(.horizontal, 12).padding(.vertical, 4)
+                            .background(Color.blue).clipShape(Capsule())
                         }
                         .listRowBackground(Color.black)
                     }
@@ -505,6 +581,11 @@ struct SourcesView: View {
                 .scrollContentBackground(.hidden)
             }
             .navigationTitle("Sources")
+            .alert("Fetch Result", isPresented: $showAlert) {
+                Button("OK") { }
+            } message: {
+                Text(alertMessage)
+            }
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button("App Store") { dismiss() }
@@ -548,7 +629,7 @@ struct AddSourceView: View {
     }
 }
 
-// MARK: - Sign View
+// MARK: - Sign View (مع اختيار ملفات الشهادة)
 struct SignView: View {
     @EnvironmentObject var store: AppStore
     @State private var selectedApp: AppItem?
@@ -556,6 +637,8 @@ struct SignView: View {
     @State private var provBase64 = ""
     @State private var password = ""
     @State private var status = ""
+    @State private var showP12Picker = false
+    @State private var showProvPicker = false
 
     var body: some View {
         NavigationView {
@@ -571,11 +654,37 @@ struct SignView: View {
                     .pickerStyle(.wheel)
                     .foregroundColor(.white)
 
-                    TextField("P12 Base64", text: $p12Base64)
-                        .textFieldStyle(.roundedBorder)
-                    TextField("Mobileprovision Base64", text: $provBase64)
-                        .textFieldStyle(.roundedBorder)
-                    SecureField("Password", text: $password)
+                    HStack {
+                        Button("Select .p12") { showP12Picker = true }
+                            .foregroundColor(.white).padding().background(Color.gray.opacity(0.3)).cornerRadius(8)
+                        if !p12Base64.isEmpty {
+                            Image(systemName: "checkmark.circle.fill").foregroundColor(.green)
+                        }
+                    }
+                    .sheet(isPresented: $showP12Picker) {
+                        DocumentPicker(types: [UTType(filenameExtension: "p12")!]) { url in
+                            if let data = try? Data(contentsOf: url) {
+                                p12Base64 = data.base64EncodedString()
+                            }
+                        }
+                    }
+
+                    HStack {
+                        Button("Select .mobileprovision") { showProvPicker = true }
+                            .foregroundColor(.white).padding().background(Color.gray.opacity(0.3)).cornerRadius(8)
+                        if !provBase64.isEmpty {
+                            Image(systemName: "checkmark.circle.fill").foregroundColor(.green)
+                        }
+                    }
+                    .sheet(isPresented: $showProvPicker) {
+                        DocumentPicker(types: [UTType(filenameExtension: "mobileprovision")!]) { url in
+                            if let data = try? Data(contentsOf: url) {
+                                provBase64 = data.base64EncodedString()
+                            }
+                        }
+                    }
+
+                    SecureField("Certificate Password", text: $password)
                         .textFieldStyle(.roundedBorder)
 
                     Button("Sign & Install") {
@@ -586,6 +695,7 @@ struct SignView: View {
                     }
                     .font(.body.bold()).foregroundColor(.white)
                     .padding().background(Color.blue).cornerRadius(12)
+                    .disabled(selectedApp == nil || p12Base64.isEmpty || provBase64.isEmpty || password.isEmpty)
 
                     Text(status).foregroundColor(.gray)
                     Spacer()
@@ -625,21 +735,17 @@ struct DownloadsView: View {
     }
 }
 
-// MARK: - Settings View
+// MARK: - Settings View (Token فقط)
 struct SettingsView: View {
     @AppStorage("gh_token") private var token = ""
-    @AppStorage("repo_owner") private var owner = ""
-    @AppStorage("repo_name") private var repo = ""
 
     var body: some View {
         NavigationView {
             ZStack {
                 Color.black.ignoresSafeArea()
                 Form {
-                    Section(header: Text("GitHub Remote Sign Config").foregroundColor(.white)) {
-                        TextField("Personal Access Token", text: $token)
-                        TextField("Owner (username)", text: $owner)
-                        TextField("Repo name", text: $repo)
+                    Section(header: Text("GitHub Token (for Al-Zng/MySigner)").foregroundColor(.white)) {
+                        SecureField("Personal Access Token", text: $token)
                     }
                 }
                 .scrollContentBackground(.hidden)
