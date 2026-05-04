@@ -15,6 +15,12 @@ struct AppItem: Identifiable, Codable, Equatable, Hashable {
     var isDownloaded: Bool = false
     var isInstalled: Bool = false
     var signedDate: Date?
+
+    enum CodingKeys: String, CodingKey {
+        case name, version, iconURL, localPath, isDownloaded, isInstalled, signedDate
+        case bundleID = "bundleIdentifier"
+        case ipaURL = "downloadURL"
+    }
 }
 
 struct DownloadItem: Identifiable, Codable {
@@ -130,7 +136,7 @@ class AppStore: ObservableObject {
         saveAll()
     }
 
-    // MARK: - Fetch Source (JSON array like KSign/ESign)
+    // MARK: - Fetch Source (supports KSign/ESign JSON format)
     func fetch(source: Source, completion: @escaping (Result<Int, Error>) -> Void) {
         guard let url = URL(string: source.url) else {
             completion(.failure(URLError(.badURL)))
@@ -141,17 +147,30 @@ class AppStore: ObservableObject {
                 if let error = error { completion(.failure(error)); return }
                 guard let data = data else { completion(.failure(URLError(.cannotParseResponse))); return }
                 do {
-                    var fetched = try JSONDecoder().decode([AppItem].self, from: data)
+                    var fetched: [AppItem] = []
+                    // Try decoding as array first
+                    if let items = try? JSONDecoder().decode([AppItem].self, from: data) {
+                        fetched = items
+                    } else {
+                        // Try decoding as root object with "apps" key
+                        let root = try JSONDecoder().decode(SourceRoot.self, from: data)
+                        fetched = root.apps
+                    }
                     let existingIDs = Set(self.apps.map { $0.bundleID })
-                    fetched = fetched.filter { !existingIDs.contains($0.bundleID) }
-                    self.apps.append(contentsOf: fetched)
+                    let newApps = fetched.filter { !existingIDs.contains($0.bundleID) }
+                    self.apps.append(contentsOf: newApps)
                     self.saveAll()
-                    completion(.success(fetched.count))
+                    completion(.success(newApps.count))
                 } catch {
                     completion(.failure(error))
                 }
             }
         }.resume()
+    }
+
+    // Helper struct for source root with "apps" key
+    struct SourceRoot: Codable {
+        let apps: [AppItem]
     }
 
     // MARK: - Download IPA
@@ -333,29 +352,6 @@ class LocalHTTPServer {
     }
 }
 
-// MARK: - Document Pickers
-struct GenericDocumentPicker: UIViewControllerRepresentable {
-    var types: [UTType]
-    var onPick: (URL) -> Void
-
-    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: types)
-        picker.delegate = context.coordinator
-        return picker
-    }
-    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
-    func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick) }
-    class Coordinator: NSObject, UIDocumentPickerDelegate {
-        let onPick: (URL) -> Void
-        init(onPick: @escaping (URL) -> Void) { self.onPick = onPick }
-        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-            guard let url = urls.first else { return }
-            _ = url.startAccessingSecurityScopedResource()
-            onPick(url)
-        }
-    }
-}
-
 // MARK: - Main ContentView
 struct ContentView: View {
     @StateObject private var store = AppStore()
@@ -385,7 +381,7 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Files View (Import any file)
+// MARK: - Files View (working file importer)
 struct FilesView: View {
     @EnvironmentObject var store: AppStore
     @State private var showImporter = false
@@ -436,10 +432,15 @@ struct FilesView: View {
                     }
                 }
             }
-            .sheet(isPresented: $showImporter) {
-                GenericDocumentPicker(types: [.item]) { url in
-                    if !importedFiles.contains(url) {
-                        importedFiles.append(url)
+            .fileImporter(isPresented: $showImporter,
+                          allowedContentTypes: [.item],
+                          allowsMultipleSelection: true) { result in
+                if let urls = try? result.get() {
+                    for url in urls {
+                        _ = url.startAccessingSecurityScopedResource()
+                        if !importedFiles.contains(url) {
+                            importedFiles.append(url)
+                        }
                     }
                 }
             }
@@ -561,7 +562,7 @@ struct LibraryView: View {
     }
 }
 
-// MARK: - Signer Sheet (اختيار شهادة محفوظة)
+// MARK: - Signer Sheet (using saved certificates)
 struct SignerSheet: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) var dismiss
@@ -680,7 +681,7 @@ struct SignerSheet: View {
     }
 }
 
-// MARK: - App Store View (مع Fetch حقيقي من المصادر)
+// MARK: - App Store View (with source fetch)
 struct AppStoreView: View {
     @EnvironmentObject var store: AppStore
     @State var showSources = false
@@ -747,7 +748,7 @@ struct AppStoreView: View {
     }
 }
 
-// MARK: - Sources View (مع Fetch و Alert)
+// MARK: - Sources View (with Fetch alert)
 struct SourcesView: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) var dismiss
@@ -915,7 +916,7 @@ struct DownloadsView: View {
     }
 }
 
-// MARK: - Settings View (الشهادات الحقيقية)
+// MARK: - Settings View (real certificates)
 struct SettingsView: View {
     @EnvironmentObject var store: AppStore
 
@@ -1089,11 +1090,15 @@ struct AddCertificateView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
             }
-            .sheet(item: $pickingType) { type in
-                GenericDocumentPicker(types: type == .p12 ? [UTType(filenameExtension: "p12")!] : [UTType(filenameExtension: "mobileprovision")!]) { url in
-                    if type == .p12 { p12URL = url } else { provURL = url }
-                    pickingType = nil
+            .fileImporter(isPresented: Binding<Bool>(
+                get: { pickingType != nil },
+                set: { if !$0 { pickingType = nil } }
+            ), allowedContentTypes: pickingType == .p12 ? [UTType(filenameExtension: "p12")!] : [UTType(filenameExtension: "mobileprovision")!],
+                          allowsMultipleSelection: false) { result in
+                if let url = try? result.get().first {
+                    if pickingType == .p12 { p12URL = url } else { provURL = url }
                 }
+                pickingType = nil
             }
         }
         .preferredColorScheme(.dark)
