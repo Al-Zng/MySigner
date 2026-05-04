@@ -45,7 +45,7 @@ jobs:
           git clone https://github.com/zhlynn/zsign.git
           cd zsign/build/macos
           make clean && make
-          sudo cp zsign /usr/local/bin/
+          sudo cp ../../bin/zsign /usr/local/bin/
 
       - name: Decrypt certificates
         env:
