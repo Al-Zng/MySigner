@@ -1,4 +1,4 @@
-name: Build MySigner (macOS) + Sign
+name: Build MySigner (macOS) + Optional Sign
 
 on:
   push:
@@ -38,7 +38,21 @@ jobs:
           zip -r MySigner_unsigned.ipa Payload
           ls -lh MySigner_unsigned.ipa
 
-      - name: Install zsign tool
+      - name: Check for signing secrets
+        id: check_secrets
+        run: |
+          if [ -n "$P12_BASE64" ] && [ -n "$MOBILEPROVISION_BASE64" ] && [ -n "$P12_PASSWORD" ]; then
+            echo "has_secrets=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_secrets=false" >> $GITHUB_OUTPUT
+          fi
+        env:
+          P12_BASE64: ${{ secrets.P12_BASE64 }}
+          MOBILEPROVISION_BASE64: ${{ secrets.MOBILEPROVISION_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+
+      - name: Install zsign tool (only if signing)
+        if: steps.check_secrets.outputs.has_secrets == 'true'
         run: |
           brew install openssl
           rm -rf zsign
@@ -47,22 +61,21 @@ jobs:
           make clean && make
           sudo cp ../../bin/zsign /usr/local/bin/
 
-      - name: Decrypt certificates
+      - name: Decrypt certificates and sign
+        if: steps.check_secrets.outputs.has_secrets == 'true'
         env:
           P12_BASE64: ${{ secrets.P12_BASE64 }}
           MOBILEPROVISION_BASE64: ${{ secrets.MOBILEPROVISION_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
         run: |
           echo "$P12_BASE64" | base64 -d > cert.p12
           echo "$MOBILEPROVISION_BASE64" | base64 -d > profile.mobileprovision
-
-      - name: Sign IPA
-        env:
-          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
-        run: |
           zsign -k cert.p12 -p "$P12_PASSWORD" -m profile.mobileprovision -o MySigner.ipa MySigner_unsigned.ipa
 
-      - name: Upload signed .ipa artifact
+      - name: Upload IPA artifact (signed or unsigned)
         uses: actions/upload-artifact@v4
         with:
-          name: MySigner-Signed.ipa
-          path: MySigner.ipa
+          name: MySigner.ipa
+          path: |
+            MySigner.ipa
+            MySigner_unsigned.ipa
