@@ -4,7 +4,7 @@ import Network
 import Foundation
 
 // MARK: - Models
-struct AppItem: Identifiable, Codable, Equatable {
+struct AppItem: Identifiable, Codable, Equatable, Hashable {
     var id = UUID()
     var name: String
     var version: String
@@ -29,7 +29,7 @@ struct Source: Identifiable, Codable {
     var url: String
 }
 
-// MARK: - App Store Manager (عقلي حقيقي)
+// MARK: - App Store Manager (حقيقي كامل)
 class AppStore: ObservableObject {
     @Published var apps: [AppItem] = []
     @Published var downloads: [DownloadItem] = []
@@ -323,7 +323,7 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Files View (مبسطة)
+// MARK: - Files View
 struct FilesView: View {
     @EnvironmentObject var store: AppStore
     var body: some View {
@@ -347,7 +347,7 @@ struct FilesView: View {
     }
 }
 
-// MARK: - Library View (تطبيقات محملة/مثبتة)
+// MARK: - Library View
 struct LibraryView: View {
     @EnvironmentObject var store: AppStore
     @State private var tab = 0
@@ -411,7 +411,7 @@ struct AppListView: View {
     }
 }
 
-// MARK: - App Store View (متجر من المصادر)
+// MARK: - App Store View
 struct AppStoreView: View {
     @EnvironmentObject var store: AppStore
     @State private var showSources = false
@@ -473,7 +473,7 @@ struct AppStoreView: View {
     }
 }
 
-// MARK: - Sources View (إدارة المصادر)
+// MARK: - Sources View
 struct SourcesView: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) var dismiss
@@ -548,7 +548,7 @@ struct AddSourceView: View {
     }
 }
 
-// MARK: - Sign View (توقيع عن بعد)
+// MARK: - Sign View
 struct SignView: View {
     @EnvironmentObject var store: AppStore
     @State private var selectedApp: AppItem?
@@ -597,7 +597,7 @@ struct SignView: View {
     }
 }
 
-// MARK: - Downloads View (تنزيلات نشطة)
+// MARK: - Downloads View
 struct DownloadsView: View {
     @EnvironmentObject var store: AppStore
     var body: some View {
@@ -625,7 +625,7 @@ struct DownloadsView: View {
     }
 }
 
-// MARK: - Settings View (GitHub config)
+// MARK: - Settings View
 struct SettingsView: View {
     @AppStorage("gh_token") private var token = ""
     @AppStorage("repo_owner") private var owner = ""
