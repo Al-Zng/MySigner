@@ -158,63 +158,64 @@ class AppStore: ObservableObject {
         let apps: [RemoteAppItem]
     }
 
-func fetch(source: Source, completion: @escaping (Result<Int, Error>) -> Void) {
-    guard let url = URL(string: source.url) else {
-        completion(.failure(URLError(.badURL)))
-        return
-    }
-    var request = URLRequest(url: url)
-    request.setValue("application/json", forHTTPHeaderField: "Accept")
-    request.timeoutInterval = 15
-
-    URLSession.shared.dataTask(with: request) { data, response, error in
-        DispatchQueue.main.async {
-            if let error = error { completion(.failure(error)); return }
-            guard let data = data else { completion(.failure(URLError(.cannotParseResponse))); return }
-
-            var fetched: [AppItem] = []
-
-            if let root = try? JSONDecoder().decode(RemoteSourceRoot.self, from: data) {
-                fetched = root.apps.map {
-                    AppItem(
-                        name: $0.name, version: $0.version,
-                        bundleID: $0.bundleIdentifier, ipaURL: $0.downloadURL,
-                        iconURL: $0.iconURL,
-                        developerName: $0.developerName,
-                        appDescription: $0.localizedDescription,
-                        size: $0.size.map { s in
-                            let mb = Double(s) / 1_000_000
-                            return String(format: "%.1f MB", mb)
-                        }
-                    )
-                }
-            } else if let items = try? JSONDecoder().decode([RemoteAppItem].self, from: data) {
-                fetched = items.map {
-                    AppItem(
-                        name: $0.name, version: $0.version,
-                        bundleID: $0.bundleIdentifier, ipaURL: $0.downloadURL,
-                        iconURL: $0.iconURL,
-                        developerName: $0.developerName,
-                        appDescription: $0.localizedDescription,
-                        size: $0.size.map { s in
-                            let mb = Double(s) / 1_000_000
-                            return String(format: "%.1f MB", mb)
-                        }
-                    )
-                }
-            } else {
-                completion(.failure(URLError(.cannotParseResponse)))
-                return
-            }
-
-            let existingURLs = Set(self.apps.map { $0.ipaURL })
-            let newApps = fetched.filter { !existingURLs.contains($0.ipaURL) }
-            self.apps.append(contentsOf: newApps)
-            self.saveAll()
-            completion(.success(newApps.count))
+    func fetch(source: Source, completion: @escaping (Result<Int, Error>) -> Void) {
+        guard let url = URL(string: source.url) else {
+            completion(.failure(URLError(.badURL)))
+            return
         }
-    }.resume()
-}
+        var request = URLRequest(url: url)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.timeoutInterval = 15
+
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            DispatchQueue.main.async {
+                if let error = error { completion(.failure(error)); return }
+                guard let data = data else { completion(.failure(URLError(.cannotParseResponse))); return }
+
+                var fetched: [AppItem] = []
+
+                if let root = try? JSONDecoder().decode(RemoteSourceRoot.self, from: data) {
+                    fetched = root.apps.map {
+                        AppItem(
+                            name: $0.name, version: $0.version,
+                            bundleID: $0.bundleIdentifier, ipaURL: $0.downloadURL,
+                            iconURL: $0.iconURL,
+                            developerName: $0.developerName,
+                            appDescription: $0.localizedDescription,
+                            size: $0.size.map { s in
+                                let mb = Double(s) / 1_000_000
+                                return String(format: "%.1f MB", mb)
+                            }
+                        )
+                    }
+                } else if let items = try? JSONDecoder().decode([RemoteAppItem].self, from: data) {
+                    fetched = items.map {
+                        AppItem(
+                            name: $0.name, version: $0.version,
+                            bundleID: $0.bundleIdentifier, ipaURL: $0.downloadURL,
+                            iconURL: $0.iconURL,
+                            developerName: $0.developerName,
+                            appDescription: $0.localizedDescription,
+                            size: $0.size.map { s in
+                                let mb = Double(s) / 1_000_000
+                                return String(format: "%.1f MB", mb)
+                            }
+                        )
+                    }
+                } else {
+                    completion(.failure(URLError(.cannotParseResponse)))
+                    return
+                }
+
+                // Allow re-adding same bundleID from different sources (unique by ipaURL)
+                let existingURLs = Set(self.apps.map { $0.ipaURL })
+                let newApps = fetched.filter { !existingURLs.contains($0.ipaURL) }
+                self.apps.append(contentsOf: newApps)
+                self.saveAll()
+                completion(.success(newApps.count))
+            }
+        }.resume()
+    }
 
     // MARK: - Download IPA
     func isDownloading(app: AppItem) -> Bool {
@@ -229,7 +230,7 @@ func fetch(source: Source, completion: @escaping (Result<Int, Error>) -> Void) {
         guard let url = URL(string: app.ipaURL) else { return }
         guard !isDownloading(app: app) else { return }
 
-        var item = DownloadItem(name: app.name, ipaURL: app.ipaURL)
+        let item = DownloadItem(name: app.name, ipaURL: app.ipaURL)
         activeDownloads.append(item)
 
         let task = URLSession.shared.downloadTask(with: url) { [weak self] localURL, response, error in
@@ -409,14 +410,14 @@ class LocalHTTPServer {
     }
 }
 
-// MARK: - Generic Document Picker (Updated)
+// MARK: - Generic Document Picker (تم إصلاحه)
 struct GenericDocumentPicker: UIViewControllerRepresentable {
-    var types: [UTType] // kept for API compatibility, but not used internally
+    var types: [UTType] // لم نعد نعتمد عليها بشكل صارم، ولكن تبقى للتوافق
     @Binding var isPresented: Bool
     var onPick: (URL) -> Void
 
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        // Use broad content types to accept any file
+        // استخدام أنواع ملفات واسعة لضمان قبول ipa, p12, mobileprovision إلخ
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.item, .data, .content])
         picker.delegate = context.coordinator
         picker.allowsMultipleSelection = false
@@ -436,7 +437,7 @@ struct GenericDocumentPicker: UIViewControllerRepresentable {
 
         func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
             guard let url = urls.first else {
-                parent.isPresented = false
+                DispatchQueue.main.async { self.parent.isPresented = false }
                 return
             }
             let accessing = url.startAccessingSecurityScopedResource()
@@ -450,7 +451,7 @@ struct GenericDocumentPicker: UIViewControllerRepresentable {
                 resultURL = tempDest
             } catch {
                 print("Document picker copy error: \(error)")
-                // Fallback: use original URL if copy fails
+                // Fallback: استخدام المسار الأصلي إذا فشل النسخ
                 resultURL = url
             }
             if accessing {
@@ -622,7 +623,7 @@ struct FilesView: View {
             }
             .sheet(isPresented: $showImporter) {
                 GenericDocumentPicker(
-                    types: [UTType(filenameExtension: "ipa") ?? .data, UTType(filenameExtension: "p12") ?? .data, UTType(filenameExtension: "mobileprovision") ?? .data, .archive, .data, .item],
+                    types: [.data, .item, .content],
                     isPresented: $showImporter
                 ) { url in
                     let destURL = store.appsDir.appendingPathComponent(url.lastPathComponent)
@@ -810,7 +811,6 @@ struct SignerSheet: View {
                 Color.black.ignoresSafeArea()
                 ScrollView {
                     VStack(spacing: 16) {
-                        // App Header
                         if let app = app {
                             HStack(spacing: 14) {
                                 AppIconView(iconURL: app.iconURL, size: 56)
@@ -833,7 +833,6 @@ struct SignerSheet: View {
                             .cornerRadius(16)
                         }
 
-                        // Certificate Section
                         VStack(alignment: .leading, spacing: 10) {
                             Text("Signing")
                                 .font(.headline.bold())
@@ -890,7 +889,6 @@ struct SignerSheet: View {
                             }
                         }
 
-                        // Password
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Certificate Password")
                                 .font(.headline.bold())
@@ -902,7 +900,6 @@ struct SignerSheet: View {
                                 .foregroundColor(.white)
                         }
 
-                        // Status
                         if !statusMessage.isEmpty {
                             HStack(spacing: 10) {
                                 Image(systemName: resultSuccess ? "checkmark.circle.fill" : "info.circle.fill")
@@ -920,7 +917,6 @@ struct SignerSheet: View {
                     .padding(16)
                 }
 
-                // Start Signing Button (bottom pinned)
                 VStack {
                     Spacer()
                     Button(action: startSigning) {
@@ -1210,9 +1206,7 @@ struct AppDetailView: View {
                 Color.black.ignoresSafeArea()
                 ScrollView {
                     VStack(spacing: 0) {
-                        // Hero Header
                         ZStack(alignment: .bottom) {
-                            // Blurred icon background
                             if let iconURL = app.iconURL, let url = URL(string: iconURL) {
                                 AsyncImage(url: url) { phase in
                                     if case .success(let image) = phase {
@@ -1233,7 +1227,6 @@ struct AppDetailView: View {
                         }
                         .frame(height: 160)
 
-                        // App Info
                         HStack(alignment: .bottom, spacing: 16) {
                             AppIconView(iconURL: app.iconURL, size: 88)
                                 .offset(y: -20)
@@ -1254,7 +1247,6 @@ struct AppDetailView: View {
                         .padding(.horizontal, 20)
                         .padding(.top, -20)
 
-                        // Action Button
                         HStack(spacing: 12) {
                             if let progress = store.downloadProgress(for: app) {
                                 VStack(spacing: 6) {
@@ -1300,7 +1292,6 @@ struct AppDetailView: View {
 
                         Divider().background(Color(white: 0.2)).padding(.horizontal)
 
-                        // Description
                         if let desc = app.appDescription, !desc.isEmpty {
                             VStack(alignment: .leading, spacing: 8) {
                                 Text("Description")
@@ -1317,7 +1308,6 @@ struct AppDetailView: View {
                             Divider().background(Color(white: 0.2)).padding(.horizontal)
                         }
 
-                        // Information
                         VStack(alignment: .leading, spacing: 0) {
                             Text("Information")
                                 .font(.headline.bold())
@@ -1408,7 +1398,6 @@ struct SourcesView: View {
                     }
                 } else {
                     List {
-                        // All Repositories row
                         NavigationLink(destination: AllAppsFromSourcesView().environmentObject(store)) {
                             HStack(spacing: 14) {
                                 ZStack {
@@ -1711,7 +1700,6 @@ struct SettingsView: View {
             ZStack {
                 Color.black.ignoresSafeArea()
                 List {
-                    // Header
                     Section {
                         VStack(spacing: 12) {
                             ZStack {
@@ -1734,7 +1722,6 @@ struct SettingsView: View {
                         .listRowBackground(Color(white: 0.08))
                     }
 
-                    // Features
                     Section(header: Text("Features").foregroundColor(.white).font(.headline).bold()) {
                         NavigationLink(destination: CertificatesView().environmentObject(store)) {
                             SettingsRowContent(icon: "signature", iconColor: .blue, title: "Certificates")
@@ -1751,7 +1738,6 @@ struct SettingsView: View {
                         .listRowBackground(Color(white: 0.08))
                     }
 
-                    // Reset
                     Section(header: Text("Reset").foregroundColor(.white).font(.headline).bold()) {
                         Button(action: {
                             store.apps.removeAll()
@@ -1960,7 +1946,7 @@ struct AddCertificateView: View {
             }
             .sheet(isPresented: $showP12Picker) {
                 GenericDocumentPicker(
-                    types: [UTType(filenameExtension: "p12") ?? .data],
+                    types: [.data],
                     isPresented: $showP12Picker
                 ) { url in
                     p12URL = url
@@ -1968,7 +1954,7 @@ struct AddCertificateView: View {
             }
             .sheet(isPresented: $showProvPicker) {
                 GenericDocumentPicker(
-                    types: [UTType(filenameExtension: "mobileprovision") ?? .data],
+                    types: [.data],
                     isPresented: $showProvPicker
                 ) { url in
                     provURL = url
