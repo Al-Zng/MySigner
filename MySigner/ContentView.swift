@@ -158,64 +158,63 @@ class AppStore: ObservableObject {
         let apps: [RemoteAppItem]
     }
 
-    func fetch(source: Source, completion: @escaping (Result<Int, Error>) -> Void) {
-        guard let url = URL(string: source.url) else {
-            completion(.failure(URLError(.badURL)))
-            return
-        }
-        var request = URLRequest(url: url)
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.timeoutInterval = 15
-
-        URLSession.shared.dataTask(with: request) { data, response, error in
-            DispatchQueue.main.async {
-                if let error = error { completion(.failure(error)); return }
-                guard let data = data else { completion(.failure(URLError(.cannotParseResponse))); return }
-
-                var fetched: [AppItem] = []
-
-                if let root = try? JSONDecoder().decode(RemoteSourceRoot.self, from: data) {
-                    fetched = root.apps.map {
-                        AppItem(
-                            name: $0.name, version: $0.version,
-                            bundleID: $0.bundleIdentifier, ipaURL: developerName $0.downloadURL,
-                            iconURL: $0.iconURL,
-                           : $0.developerName,
-                            appDescription: $0.localizedDescription,
-                            size: $0.size.map { s in
-                                let mb = Double(s) / 1_000_000
-                                return String(format: "%.1f MB", mb)
-                            }
-                        )
-                    }
-                } else if let items = try? JSONDecoder().decode([RemoteAppItem].self, from: data) {
-                    fetched = items.map {
-AppItem(
-    name: $0.name, version: $0.version,
-    bundleID: $0.bundleIdentifier, ipaURL: $0.downloadURL,
-    iconURL: $0.iconURL,
-    developerName: $0.developerName,
-    appDescription: $0.localizedDescription,
-    size: $0.size.map { s in
-        let mb = Double(s) / 1_000_000
-        return String(format: "%.1f MB", mb)
+func fetch(source: Source, completion: @escaping (Result<Int, Error>) -> Void) {
+    guard let url = URL(string: source.url) else {
+        completion(.failure(URLError(.badURL)))
+        return
     }
-)
-                    }
-                } else {
-                    completion(.failure(URLError(.cannotParseResponse)))
-                    return
+    var request = URLRequest(url: url)
+    request.setValue("application/json", forHTTPHeaderField: "Accept")
+    request.timeoutInterval = 15
+
+    URLSession.shared.dataTask(with: request) { data, response, error in
+        DispatchQueue.main.async {
+            if let error = error { completion(.failure(error)); return }
+            guard let data = data else { completion(.failure(URLError(.cannotParseResponse))); return }
+
+            var fetched: [AppItem] = []
+
+            if let root = try? JSONDecoder().decode(RemoteSourceRoot.self, from: data) {
+                fetched = root.apps.map {
+                    AppItem(
+                        name: $0.name, version: $0.version,
+                        bundleID: $0.bundleIdentifier, ipaURL: $0.downloadURL,
+                        iconURL: $0.iconURL,
+                        developerName: $0.developerName,
+                        appDescription: $0.localizedDescription,
+                        size: $0.size.map { s in
+                            let mb = Double(s) / 1_000_000
+                            return String(format: "%.1f MB", mb)
+                        }
+                    )
                 }
-
-                // Allow re-adding same bundleID from different sources (unique by ipaURL)
-                let existingURLs = Set(self.apps.map { $0.ipaURL })
-                let newApps = fetched.filter { !existingURLs.contains($0.ipaURL) }
-                self.apps.append(contentsOf: newApps)
-                self.saveAll()
-                completion(.success(newApps.count))
+            } else if let items = try? JSONDecoder().decode([RemoteAppItem].self, from: data) {
+                fetched = items.map {
+                    AppItem(
+                        name: $0.name, version: $0.version,
+                        bundleID: $0.bundleIdentifier, ipaURL: $0.downloadURL,
+                        iconURL: $0.iconURL,
+                        developerName: $0.developerName,
+                        appDescription: $0.localizedDescription,
+                        size: $0.size.map { s in
+                            let mb = Double(s) / 1_000_000
+                            return String(format: "%.1f MB", mb)
+                        }
+                    )
+                }
+            } else {
+                completion(.failure(URLError(.cannotParseResponse)))
+                return
             }
-        }.resume()
-    }
+
+            let existingURLs = Set(self.apps.map { $0.ipaURL })
+            let newApps = fetched.filter { !existingURLs.contains($0.ipaURL) }
+            self.apps.append(contentsOf: newApps)
+            self.saveAll()
+            completion(.success(newApps.count))
+        }
+    }.resume()
+}
 
     // MARK: - Download IPA
     func isDownloading(app: AppItem) -> Bool {
