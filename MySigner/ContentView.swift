@@ -57,6 +57,9 @@ class AppStore: ObservableObject {
     @Published var downloads: [DownloadItem] = []
     @Published var sources: [Source] = []
 
+    // تمت إضافة هذا القاموس لحفظ كائنات المراقبة ومنع التحميل الوهمي
+    private var downloadObservations: [UUID: NSKeyValueObservation] = [:]
+
     let server = LocalHTTPServer()
 
     private let baseDir: URL = {
@@ -192,6 +195,7 @@ class AppStore: ObservableObject {
                 defer {
                     self.downloads.removeAll { $0.id == item.id }
                     self.saveAll()
+                    self.downloadObservations.removeValue(forKey: item.id) // تنظيف المراقب بعد الانتهاء
                 }
                 guard let localURL = localURL, error == nil else { return }
                 let filename = "\(app.bundleID).ipa"
@@ -208,13 +212,14 @@ class AppStore: ObservableObject {
         }
         let observation = task.progress.observe(\.fractionCompleted) { [weak self] prog, _ in
             DispatchQueue.main.async {
-                if let idx = self?.downloads.firstIndex(where: { $0.name == item.name }) {
+                if let idx = self?.downloads.firstIndex(where: { $0.id == item.id }) {
                     self?.downloads[idx].progress = prog.fractionCompleted
                 }
             }
         }
+        
+        self.downloadObservations[item.id] = observation // حفظ المراقب لضمان عمل واجهة التحميل
         task.resume()
-        _ = observation
     }
 
     // MARK: - Install via local server
@@ -376,7 +381,14 @@ struct GenericDocumentPicker: UIViewControllerRepresentable {
         init(onPick: @escaping (URL) -> Void) { self.onPick = onPick }
         func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
             guard let url = urls.first else { return }
-            _ = url.startAccessingSecurityScopedResource()
+            // فتح صلاحية الوصول الآمن للملف المستورد
+            let isAccessing = url.startAccessingSecurityScopedResource()
+            defer {
+                if isAccessing {
+                    // إغلاق الصلاحية لمنع Memory Leaks بعد الانتهاء
+                    url.stopAccessingSecurityScopedResource()
+                }
+            }
             onPick(url)
         }
     }
@@ -464,8 +476,20 @@ struct FilesView: View {
             }
             .sheet(isPresented: $showImporter) {
                 GenericDocumentPicker(types: [.item]) { url in
-                    if !importedFiles.contains(url) {
-                        importedFiles.append(url)
+                    // النسخ المباشر للملف إلى مجلد التطبيق لضمان حفظه وعدم فقدانه
+                    let destURL = store.appsDir.appendingPathComponent(url.lastPathComponent)
+                    do {
+                        if FileManager.default.fileExists(atPath: destURL.path) {
+                            try FileManager.default.removeItem(at: destURL)
+                        }
+                        try FileManager.default.copyItem(at: url, to: destURL)
+                        DispatchQueue.main.async {
+                            if !importedFiles.contains(destURL) {
+                                importedFiles.append(destURL)
+                            }
+                        }
+                    } catch {
+                        print("File import error: \(error)")
                     }
                 }
             }
