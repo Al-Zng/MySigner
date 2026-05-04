@@ -31,7 +31,7 @@ struct Source: Identifiable, Codable {
     var url: String
 }
 
-struct Certificate: Identifiable, Codable {
+struct Certificate: Identifiable, Codable, Hashable {
     var id = UUID()
     var name: String
     var teamID: String = ""
@@ -106,7 +106,6 @@ class AppStore: ObservableObject {
 
     // MARK: - Certificate Management
     func addCertificate(name: String, p12URL: URL, provisionURL: URL?) {
-        // Copy files to internal storage
         let p12Dest = certsDir.appendingPathComponent(UUID().uuidString + ".p12")
         try? FileManager.default.copyItem(at: p12URL, to: p12Dest)
 
@@ -123,7 +122,6 @@ class AppStore: ObservableObject {
     }
 
     func deleteCertificate(_ cert: Certificate) {
-        // Remove files
         try? FileManager.default.removeItem(atPath: cert.p12Path)
         if let provPath = cert.mobileProvisionPath {
             try? FileManager.default.removeItem(atPath: provPath)
@@ -132,7 +130,7 @@ class AppStore: ObservableObject {
         saveAll()
     }
 
-    // MARK: - Fetch Source
+    // MARK: - Fetch Source (JSON array like KSign/ESign)
     func fetch(source: Source, completion: @escaping (Result<Int, Error>) -> Void) {
         guard let url = URL(string: source.url) else {
             completion(.failure(URLError(.badURL)))
@@ -222,8 +220,8 @@ class AppStore: ObservableObject {
         if let url = URL(string: urlString) { UIApplication.shared.open(url) }
     }
 
-    // MARK: - Remote Signing (using your internal token)
-    private let githubToken = "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" // <- ضع توكنك الحقيقي هنا
+    // MARK: - Remote Signing (internal GitHub token)
+    private let githubToken = "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" // <-- ضع توكنك الحقيقي هنا
     func triggerRemoteSign(app: AppItem, certificate: Certificate, p12Password: String, completion: @escaping (Bool, String) -> Void) {
         guard let p12Data = try? Data(contentsOf: URL(fileURLWithPath: certificate.p12Path)),
               let provData = certificate.mobileProvisionPath.flatMap({ try? Data(contentsOf: URL(fileURLWithPath: $0)) }) else {
@@ -387,7 +385,7 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Files View
+// MARK: - Files View (Import any file)
 struct FilesView: View {
     @EnvironmentObject var store: AppStore
     @State private var showImporter = false
@@ -563,7 +561,7 @@ struct LibraryView: View {
     }
 }
 
-// MARK: - Signer Sheet (مع اختيار الشهادة المحفوظة)
+// MARK: - Signer Sheet (اختيار شهادة محفوظة)
 struct SignerSheet: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) var dismiss
@@ -605,7 +603,7 @@ struct SignerSheet: View {
                         } else {
                             Picker("الشهادة", selection: $selectedCert) {
                                 Text("اختر شهادة").tag(nil as Certificate?)
-                                ForEach(store.certificates) { cert in
+                                ForEach(store.certificates, id: \.id) { cert in
                                     Text(cert.name).tag(cert as Certificate?)
                                 }
                             }
@@ -682,7 +680,7 @@ struct SignerSheet: View {
     }
 }
 
-// MARK: - App Store View
+// MARK: - App Store View (مع Fetch حقيقي من المصادر)
 struct AppStoreView: View {
     @EnvironmentObject var store: AppStore
     @State var showSources = false
@@ -749,7 +747,7 @@ struct AppStoreView: View {
     }
 }
 
-// MARK: - Sources View (مع Fetch حقيقي)
+// MARK: - Sources View (مع Fetch و Alert)
 struct SourcesView: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) var dismiss
@@ -802,7 +800,7 @@ struct SourcesView: View {
                                 }
                                 .listRowBackground(Color(white: 0.1))
                             }
-                            .onDelete { store.sources.remove(atOffsets: $0) }
+                            .onDelete { store.sources.remove(atOffsets: $0); store.saveAll() }
                         }
                     }
                     .listStyle(.plain)
@@ -910,7 +908,6 @@ struct DownloadsView: View {
                     guard let url = URL(string: downloadURL), !downloadURL.isEmpty else { return }
                     let name = url.lastPathComponent
                     store.downloads.append(DownloadItem(name: name, size: "0 MB", ipaURL: downloadURL, progress: 0))
-                    // Simulate download - in real app use URLSession
                 }
                 Button("Cancel", role: .cancel) {}
             }
@@ -918,7 +915,7 @@ struct DownloadsView: View {
     }
 }
 
-// MARK: - Settings View (شهادات حقيقية)
+// MARK: - Settings View (الشهادات الحقيقية)
 struct SettingsView: View {
     @EnvironmentObject var store: AppStore
 
@@ -1048,9 +1045,9 @@ struct AddCertificateView: View {
     @State private var certName = ""
     @State private var p12URL: URL?
     @State private var provURL: URL?
-    @State private var pickingType: PickType? = nil
+    @State private var pickingType: CertPickType? = nil
 
-    enum PickType: Identifiable { case p12, provision; var id: Int { hashValue } }
+    enum CertPickType: Identifiable { case p12, provision; var id: Int { hashValue } }
 
     var body: some View {
         NavigationView {
