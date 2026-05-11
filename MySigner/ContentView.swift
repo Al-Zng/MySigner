@@ -440,10 +440,12 @@ struct FilePicker: View {
                         
                         DispatchQueue.main.async {
                             onPick(resultURL)
+                            isPresented = false
                         }
                     }
                 case .failure(let error):
                     print("File picker error: \(error.localizedDescription)")
+                    isPresented = false
                 }
             }
     }
