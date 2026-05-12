@@ -707,8 +707,10 @@ struct LibraryView: View {
                         LazyVStack(spacing: 12) {
                             ForEach(store.apps) { app in
                                 AppRow(app: app) {
-                                    selectedApp = app
-                                    showSignSheet = true
+                                    DispatchQueue.main.async {
+                                        self.selectedApp = app
+                                        self.showSignSheet = true
+                                    }
                                 }
                             }
                         }
