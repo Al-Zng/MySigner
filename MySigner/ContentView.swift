@@ -46,6 +46,7 @@ struct Source: Identifiable, Codable {
 struct Certificate: Identifiable, Codable, Hashable {
     var id = UUID()
     var name: String
+    var password: String = ""
     var teamID: String = ""
     var expiryDate: Date = Date().addingTimeInterval(90*24*60*60)
     var p12Path: String
@@ -65,8 +66,6 @@ class AppStore: ObservableObject {
 
     private var downloadObservations: [UUID: NSKeyValueObservation] = [:]
     private var downloadTasks: [UUID: URLSessionDownloadTask] = [:]
-
-    let server = LocalHTTPServer()
 
     private let baseDir: URL = {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -117,7 +116,7 @@ class AppStore: ObservableObject {
     }
 
     // MARK: - Certificate Management
-    func addCertificate(name: String, p12URL: URL, provisionURL: URL?) {
+    func addCertificate(name: String, password: String, p12URL: URL, provisionURL: URL?) {
         let p12Dest = certsDir.appendingPathComponent(UUID().uuidString + ".p12")
         try? FileManager.default.copyItem(at: p12URL, to: p12Dest)
 
@@ -128,7 +127,7 @@ class AppStore: ObservableObject {
             provDest = dest.path
         }
 
-        let cert = Certificate(name: name, p12Path: p12Dest.path, mobileProvisionPath: provDest)
+        let cert = Certificate(name: name, password: password, p12Path: p12Dest.path, mobileProvisionPath: provDest)
         certificates.append(cert)
         saveAll()
     }
@@ -269,130 +268,97 @@ class AppStore: ObservableObject {
         task.resume()
     }
 
-    // MARK: - Install via local server
-    func install(app: AppItem) {
-        guard let path = app.localPath else { return }
-        let url = URL(fileURLWithPath: path)
-        server.start(ipaURL: url) { [weak self] manifestURL in
-            guard let self = self else { return }
-            let installURL = "itms-services://?action=download-manifest&url=\(manifestURL)"
-            if let url = URL(string: installURL) {
-                UIApplication.shared.open(url)
-            }
+    // MARK: - Remote Signing
+    func signAndInstall(app: AppItem, certificate: Certificate, completion: @escaping (Result<String, Error>) -> Void) {
+        guard let localPath = app.localPath,
+              let p12Data = try? Data(contentsOf: URL(fileURLWithPath: certificate.p12Path)) else {
+            completion(.failure(NSError(domain: "MySigner", code: -1, userInfo: [NSLocalizedDescriptionKey: "Missing files"])))
+            return
         }
-    }
-}
-
-// MARK: - Local HTTP Server for Installation
-class LocalHTTPServer {
-    private var listener: NWListener?
-    private var ipaURL: URL?
-    private var port: NWEndpoint.Port = 8080
-
-    func start(ipaURL: URL, completion: @escaping (String) -> Void) {
-        self.ipaURL = ipaURL
-        stop()
-
-        do {
-            listener = try NWListener(using: .tcp, on: port)
-            listener?.stateUpdateHandler = { state in
-                if case .ready = state {
-                    let ip = self.getIPAddress() ?? "127.0.0.1"
-                    let manifest = self.generateManifest(ip: ip, bundleID: "com.mysigner.install", name: ipaURL.lastPathComponent)
-                    let manifestURL = "http://\(ip):\(self.port)/manifest.plist"
-                    DispatchQueue.main.async { completion(manifestURL) }
-                }
+        
+        let ipaURL = URL(fileURLWithPath: localPath)
+        guard let ipaData = try? Data(contentsOf: ipaURL) else {
+            completion(.failure(NSError(domain: "MySigner", code: -1, userInfo: [NSLocalizedDescriptionKey: "Could not read IPA file"])))
+            return
+        }
+        
+        var provData: Data? = nil
+        if let provPath = certificate.mobileProvisionPath {
+            provData = try? Data(contentsOf: URL(fileURLWithPath: provPath))
+        }
+        
+        let url = URL(string: "https://signtools.ipaomtk.com/sign-merge.php")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        
+        let boundary = "Boundary-\(UUID().uuidString)"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        
+        var body = Data()
+        
+        func append(_ name: String, _ value: String) {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n".data(using: .utf8)!)
+            body.append("\(value)\r\n".data(using: .utf8)!)
+        }
+        
+        func appendFile(_ name: String, _ data: Data, _ filename: String) {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"\(name)\"; filename=\"\(filename)\"\r\n".data(using: .utf8)!)
+            body.append("Content-Type: application/octet-stream\r\n\r\n".data(using: .utf8)!)
+            body.append(data)
+            body.append("\r\n".data(using: .utf8)!)
+        }
+        
+        appendFile("p12", p12Data, "cert.p12")
+        if let prov = provData {
+            appendFile("mobileprovision", prov, "profile.mobileprovision")
+        }
+        append("password", certificate.password)
+        appendFile("custom_ipa", ipaData, "app.ipa")
+        append("custom_name", app.name)
+        append("bundle", app.bundleID)
+        append("mode", "custom_ipa")
+        
+        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+        request.httpBody = body
+        
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error = error {
+                DispatchQueue.main.async { completion(.failure(error)) }
+                return
             }
-            listener?.newConnectionHandler = { conn in
-                self.handleConnection(conn)
+            
+            guard let data = data else {
+                DispatchQueue.main.async { completion(.failure(NSError(domain: "MySigner", code: -1, userInfo: [NSLocalizedDescriptionKey: "No data from server"]))) }
+                return
             }
-            listener?.start(queue: .global())
-        } catch { print("Server error: \(error)") }
-    }
-
-    func stop() {
-        listener?.cancel()
-        listener = nil
-    }
-
-    private func handleConnection(_ conn: NWConnection) {
-        conn.start(queue: .global())
-        conn.receive(minimumIncompleteLength: 1, maximumLength: 1024) { data, _, isDone, _ in
-            if let data = data, let request = String(data: data, encoding: .utf8) {
-                if request.contains("GET /manifest.plist") {
-                    let ip = self.getIPAddress() ?? "127.0.0.1"
-                    let manifest = self.generateManifest(ip: ip, bundleID: "com.mysigner.install", name: self.ipaURL?.lastPathComponent ?? "App")
-                    let response = "HTTP/1.1 200 OK\r\nContent-Type: text/xml\r\nContent-Length: \(manifest.count)\r\n\r\n\(manifest)"
-                    conn.send(content: response.data(using: .utf8), completion: .contentProcessed({ _ in conn.cancel() }))
-                } else if request.contains("GET /app.ipa") {
-                    if let url = self.ipaURL, let data = try? Data(contentsOf: url) {
-                        let responseHeader = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: \(data.count)\r\n\r\n"
-                        conn.send(content: responseHeader.data(using: .utf8), completion: .contentProcessed({ _ in
-                            conn.send(content: data, completion: .contentProcessed({ _ in conn.cancel() }))
-                        }))
+            
+            do {
+                if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    if let status = json["status"] as? String, status == "error" {
+                        let msg = json["message"] as? String ?? "Unknown server error"
+                        DispatchQueue.main.async { completion(.failure(NSError(domain: "MySigner", code: -1, userInfo: [NSLocalizedDescriptionKey: msg]))) }
+                        return
+                    }
+                    
+                    if let manifestUrl = json["manifestUrl"] as? String {
+                        DispatchQueue.main.async { completion(.success(manifestUrl)) }
+                    } else {
+                        DispatchQueue.main.async { completion(.failure(NSError(domain: "MySigner", code: -1, userInfo: [NSLocalizedDescriptionKey: "Manifest URL not found in response"]))) }
                     }
                 }
+            } catch {
+                DispatchQueue.main.async { completion(.failure(error)) }
             }
-        }
+        }.resume()
     }
-
-    private func generateManifest(ip: String, bundleID: String, name: String) -> String {
-        """
-        <?xml version="1.0" encoding="UTF-8"?>
-        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-        <plist version="1.0">
-        <dict>
-            <key>items</key>
-            <array>
-                <dict>
-                    <key>assets</key>
-                    <array>
-                        <dict>
-                            <key>kind</key>
-                            <string>software-package</string>
-                            <key>url</key>
-                            <string>http://\(ip):\(port)/app.ipa</string>
-                        </dict>
-                    </array>
-                    <key>metadata</key>
-                    <dict>
-                        <key>bundle-identifier</key>
-                        <string>\(bundleID)</string>
-                        <key>bundle-version</key>
-                        <string>1.0</string>
-                        <key>kind</key>
-                        <string>software</string>
-                        <key>title</key>
-                        <string>\(name)</string>
-                    </dict>
-                </dict>
-            </array>
-        </dict>
-        </plist>
-        """
-    }
-
-    private func getIPAddress() -> String? {
-        var address: String?
-        var ifaddr: UnsafeMutablePointer<ifaddrs>?
-        if getifaddrs(&ifaddr) == 0 {
-            var ptr = ifaddr
-            while ptr != nil {
-                defer { ptr = ptr?.pointee.ifa_next }
-                let interface = ptr?.pointee
-                let addrFamily = interface?.ifa_addr.pointee.sa_family
-                if addrFamily == UInt8(AF_INET) {
-                    let name = String(cString: (interface?.ifa_name)!)
-                    if name == "en0" || name == "pdp_ip0" {
-                        var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-                        getnameinfo(interface?.ifa_addr, socklen_t((interface?.ifa_addr.pointee.sa_len)!), &hostname, socklen_t(hostname.count), nil, socklen_t(0), NI_NUMERICHOST)
-                        address = String(cString: hostname)
-                    }
-                }
-            }
-            freeifaddrs(ifaddr)
+    
+    func triggerInstallation(manifestUrl: String) {
+        let installURL = "itms-services://?action=download-manifest&url=\(manifestUrl)"
+        if let url = URL(string: installURL) {
+            UIApplication.shared.open(url)
         }
-        return address
     }
 }
 
@@ -695,27 +661,48 @@ struct LibraryView: View {
                         Image(systemName: "square.grid.2x2")
                             .font(.system(size: 56))
                             .foregroundStyle(.blue.opacity(0.6))
-                        Text("Library Empty")
+                        Text("No Apps")
                             .font(.title3.bold())
                             .foregroundColor(.white)
-                        Text("Download apps from the store")
+                        Text("Apps you download or import will appear here")
                             .foregroundColor(.gray)
                             .font(.subheadline)
                     }
                 } else {
-                    ScrollView {
-                        LazyVStack(spacing: 12) {
-                            ForEach(store.apps) { app in
-                                AppRow(app: app) {
-                                    DispatchQueue.main.async {
-                                        self.selectedApp = app
-                                        self.showSignSheet = true
+                    List {
+                        ForEach(store.apps) { app in
+                            Button(action: {
+                                selectedApp = app
+                                showSignSheet = true
+                            }) {
+                                HStack(spacing: 14) {
+                                    AppIconView(iconURL: app.iconURL, size: 54)
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(app.name)
+                                            .foregroundColor(.white)
+                                            .font(.system(size: 15, weight: .bold))
+                                        Text(app.bundleID)
+                                            .foregroundColor(.gray)
+                                            .font(.caption)
+                                    }
+                                    Spacer()
+                                    if app.isDownloaded {
+                                        Text("SIGN")
+                                            .font(.system(size: 12, weight: .black))
+                                            .foregroundColor(.blue)
+                                            .padding(.horizontal, 16).padding(.vertical, 6)
+                                            .background(Color.blue.opacity(0.15))
+                                            .cornerRadius(12)
                                     }
                                 }
+                                .padding(.vertical, 6)
                             }
+                            .listRowBackground(Color(white: 0.08))
                         }
-                        .padding(16)
+                        .onDelete { idx in store.apps.remove(atOffsets: idx); store.saveAll() }
                     }
+                    .listStyle(.plain)
+                    .scrollContentBackground(.hidden)
                 }
             }
             .navigationTitle("Library")
@@ -728,73 +715,22 @@ struct LibraryView: View {
     }
 }
 
-struct AppRow: View {
-    let app: AppItem
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 14) {
-                AppIconView(iconURL: app.iconURL, size: 54)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(app.name).font(.system(size: 16, weight: .semibold)).foregroundColor(.white)
-                    Text(app.bundleID).font(.system(size: 12)).foregroundColor(.gray)
-                    if let size = app.size {
-                        Text(size).font(.system(size: 11)).foregroundColor(.blue.opacity(0.8))
-                    }
-                }
-                Spacer()
-                Text(app.isDownloaded ? "Sign" : "Download")
-                    .font(.system(size: 13, weight: .bold))
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 16).padding(.vertical, 6)
-                    .background(app.isDownloaded ? Color.blue : Color(white: 0.15))
-                    .cornerRadius(14)
-            }
-            .padding(12)
-            .background(Color(white: 0.08))
-            .cornerRadius(16)
-        }
-    }
-}
-
 // MARK: - App Store View
 struct AppStoreView: View {
     @EnvironmentObject var store: AppStore
     @State private var showAddSource = false
-    @State private var searchText = ""
-
-    var filteredApps: [AppItem] {
-        if searchText.isEmpty { return store.apps }
-        return store.apps.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
-    }
 
     var body: some View {
         NavigationView {
             ZStack {
                 Color.black.ignoresSafeArea()
                 ScrollView {
-                    VStack(spacing: 20) {
-                        // Search Bar
-                        HStack {
-                            Image(systemName: "magnifyingglass").foregroundColor(.gray)
-                            TextField("Search apps...", text: $searchText)
-                                .foregroundColor(.white)
+                    LazyVStack(spacing: 16) {
+                        ForEach(store.apps.filter { $0.ipaURL != "" }) { app in
+                            StoreAppRow(app: app)
                         }
-                        .padding(12)
-                        .background(Color(white: 0.1))
-                        .cornerRadius(12)
-                        .padding(.horizontal, 16)
-
-                        // App List
-                        LazyVStack(spacing: 16) {
-                            ForEach(filteredApps) { app in
-                                StoreAppRow(app: app)
-                            }
-                        }
-                        .padding(.horizontal, 16)
                     }
-                    .padding(.vertical, 16)
+                    .padding(16)
                 }
             }
             .navigationTitle("App Store")
@@ -955,7 +891,8 @@ struct SignView: View {
     let app: AppItem
     @State private var selectedCert: Certificate?
     @State private var isSigning = false
-    @State private var signProgress = 0.0
+    @State private var errorMessage: String?
+    @State private var showError = false
 
     var body: some View {
         NavigationView {
@@ -995,9 +932,9 @@ struct SignView: View {
 
                     if isSigning {
                         VStack(spacing: 12) {
-                            ProgressView(value: signProgress)
+                            ProgressView()
                                 .tint(.blue)
-                            Text("Signing Application...").font(.caption).foregroundColor(.gray)
+                            Text("Uploading & Signing...").font(.caption).foregroundColor(.gray)
                         }
                         .padding(.horizontal, 40)
                     }
@@ -1005,14 +942,17 @@ struct SignView: View {
                     Spacer()
 
                     Button(action: {
+                        guard let cert = selectedCert else { return }
                         isSigning = true
-                        Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { timer in
-                            signProgress += 0.05
-                            if signProgress >= 1.0 {
-                                timer.invalidate()
-                                isSigning = false
-                                store.install(app: app)
+                        store.signAndInstall(app: app, certificate: cert) { result in
+                            isSigning = false
+                            switch result {
+                            case .success(let manifestUrl):
+                                store.triggerInstallation(manifestUrl: manifestUrl)
                                 dismiss()
+                            case .failure(let error):
+                                self.errorMessage = error.localizedDescription
+                                self.showError = true
                             }
                         }
                     }) {
@@ -1036,6 +976,11 @@ struct SignView: View {
                     Button("Cancel") { dismiss() }
                 }
             }
+            .alert("Signing Error", isPresented: $showError) {
+                Button("OK", role: .cancel) { }
+            } message: {
+                Text(errorMessage ?? "An unknown error occurred")
+            }
         }
     }
 }
@@ -1049,7 +994,6 @@ struct CertCard: View {
             Text(cert.name).font(.system(size: 14, weight: .bold)).foregroundColor(isSelected ? .white : .white).lineLimit(1)
             Text(cert.isValid ? "Valid" : "Expired").font(.system(size: 10)).foregroundColor(isSelected ? .white.opacity(0.8) : .gray)
         }
-        .frame(width: 120, height: 100)
         .padding(12)
         .background(isSelected ? Color.blue : Color(white: 0.1))
         .cornerRadius(16)
@@ -1203,6 +1147,7 @@ struct AddCertificateView: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) var dismiss
     @State private var certName = ""
+    @State private var certPassword = ""
     @State private var p12URL: URL?
     @State private var provURL: URL?
     
@@ -1220,6 +1165,12 @@ struct AddCertificateView: View {
                         .cornerRadius(12)
                         .foregroundColor(.white)
 
+                    SecureField("Certificate Password", text: $certPassword)
+                        .padding(14)
+                        .background(Color(white: 0.1))
+                        .cornerRadius(12)
+                        .foregroundColor(.white)
+
                     FilePickerRow(icon: "lock.shield.fill", title: "P12 File", subtitle: p12URL?.lastPathComponent ?? "Select .p12 file", color: .purple, isSelected: p12URL != nil) {
                         showP12Picker = true
                     }
@@ -1231,7 +1182,7 @@ struct AddCertificateView: View {
                     Button(action: {
                         guard let p12 = p12URL else { return }
                         let name = certName.isEmpty ? p12.deletingPathExtension().lastPathComponent : certName
-                        store.addCertificate(name: name, p12URL: p12, provisionURL: provURL)
+                        store.addCertificate(name: name, password: certPassword, p12URL: p12, provisionURL: provURL)
                         dismiss()
                     }) {
                         Text("Add Certificate")
