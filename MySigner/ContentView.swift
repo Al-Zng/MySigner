@@ -342,10 +342,18 @@ class AppStore: ObservableObject {
                         return
                     }
                     
-                    // Check multiple possible keys for the manifest URL
-                    let manifestUrl = json["manifestUrl"] as? String ?? 
-                                     json["manifest_url"] as? String ?? 
-                                     json["url"] as? String
+                    // Check for manifestUrl in various locations (root, nested app object, or apps array)
+                    var manifestUrl: String? = json["manifestUrl"] as? String ?? 
+                                             json["manifest_url"] as? String ?? 
+                                             json["url"] as? String
+                    
+                    if manifestUrl == nil {
+                        if let app = json["app"] as? [String: Any] {
+                            manifestUrl = app["manifestUrl"] as? String
+                        } else if let apps = json["apps"] as? [[String: Any]], let firstApp = apps.first {
+                            manifestUrl = firstApp["manifestUrl"] as? String
+                        }
+                    }
                     
                     if let url = manifestUrl {
                         DispatchQueue.main.async { completion(.success(url)) }
