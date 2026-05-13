@@ -342,10 +342,17 @@ class AppStore: ObservableObject {
                         return
                     }
                     
-                    if let manifestUrl = json["manifestUrl"] as? String {
-                        DispatchQueue.main.async { completion(.success(manifestUrl)) }
+                    // Check multiple possible keys for the manifest URL
+                    let manifestUrl = json["manifestUrl"] as? String ?? 
+                                     json["manifest_url"] as? String ?? 
+                                     json["url"] as? String
+                    
+                    if let url = manifestUrl {
+                        DispatchQueue.main.async { completion(.success(url)) }
                     } else {
-                        DispatchQueue.main.async { completion(.failure(NSError(domain: "MySigner", code: -1, userInfo: [NSLocalizedDescriptionKey: "Manifest URL not found in response"]))) }
+                        let rawResponse = String(data: data, encoding: .utf8) ?? "Unable to read response"
+                        let errorMsg = "Manifest URL not found. Server response: \(rawResponse)"
+                        DispatchQueue.main.async { completion(.failure(NSError(domain: "MySigner", code: -1, userInfo: [NSLocalizedDescriptionKey: errorMsg]))) }
                     }
                 }
             } catch {
