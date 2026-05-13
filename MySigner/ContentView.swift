@@ -310,11 +310,13 @@ class AppStore: ObservableObject {
             body.append("\r\n".data(using: .utf8)!)
         }
         
+        append("certificate_mode", "upload")
         appendFile("p12", p12Data, "cert.p12")
         if let prov = provData {
             appendFile("mobileprovision", prov, "profile.mobileprovision")
         }
         append("password", certificate.password)
+        append("save_certificate", "1")
         appendFile("custom_ipa", ipaData, "app.ipa")
         append("custom_name", app.name)
         append("bundle", app.bundleID)
